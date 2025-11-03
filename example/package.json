@@ -1,5 +1,5 @@
 {
-  "name": "react-native-webview-sized-example",
+  "name": "react-native-sized-webview-example",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -10,16 +10,17 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
-    "expo": "~54.0.20",
+    "expo": "~54.0.21",
     "expo-status-bar": "~3.0.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
-    "react-native-web": "~0.21.0"
+    "react-native-web": "~0.21.2",
+    "react-native-webview": "^13.16.0"
   },
   "private": true,
   "devDependencies": {
-    "react-native-builder-bob": "^0.40.13",
-    "react-native-monorepo-config": "^0.1.9"
+    "react-native-builder-bob": "^0.40.14",
+    "react-native-monorepo-config": "^0.3.0"
   }
 }

@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-webview-sized": ["./src/index"]
+      "react-native-sized-webview": ["./src/index"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
