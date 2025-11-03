@@ -71,8 +71,10 @@
     "@react-native/babel-preset": "0.82.1",
     "@react-native/eslint-config": "^0.82.1",
     "@release-it/conventional-changelog": "^10.0.1",
+    "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^30.0.0",
     "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "babel-plugin-react-compiler": "^1.0.0",
     "commitlint": "^20.1.0",
     "del-cli": "^7.0.0",
@@ -85,6 +87,7 @@
     "react-native": "0.82.1",
     "react-native-builder-bob": "^0.40.14",
     "react-native-webview": "^13.16.0",
+    "react-test-renderer": "19.1.0",
     "release-it": "^19.0.5",
     "typescript": "^5.9.3"
   },
@@ -103,7 +106,21 @@
     "modulePathIgnorePatterns": [
       "<rootDir>/example/node_modules",
       "<rootDir>/lib/"
-    ]
+    ],
+    "collectCoverage": true,
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx}",
+      "!src/index.ts",
+      "!src/constants/autoHeightBridge.ts"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 100,
+        "functions": 100,
+        "lines": 100,
+        "statements": 100
+      }
+    }
   },
   "commitlint": {
     "extends": [

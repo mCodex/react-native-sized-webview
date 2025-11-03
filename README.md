@@ -68,6 +68,7 @@ The example showcases:
 - Auto-sizing dynamic HTML with toggled sections.
 - Live external sites (Marvel, NFL, Google, Wikipedia, The Verge) embedded without layout thrash.
 - Real-time height readouts so you can verify your own endpoints quickly.
+- One code path that works the same on iOS, Android, and Expo Go.
 
 > [!NOTE]
 > 🧪 The demo is built with Expo; swap the `uri` to test your own pages instantly.
@@ -100,6 +101,14 @@ The example showcases:
 | Scrolling in parent `ScrollView` | Nested scroll can fight gestures | Parent retains full momentum and gesture priority |
 
 Benchmarks were captured on CMS articles up to 3k words in a 60 fps RN dev build. The bridge batches DOM mutations so even long documents resize without thrashing the JS thread.
+
+## ✅ Testing
+
+```sh
+yarn test
+```
+
+Jest runs with full coverage collection and enforces 100% statements, branches, functions, and lines across the TypeScript source.
 
 ## 🛠️ Local Development
 

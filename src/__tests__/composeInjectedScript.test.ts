@@ -16,4 +16,10 @@ describe('composeInjectedScript', () => {
     expect(script).toContain('const b = 2;');
     expect(script?.trim().endsWith('true;')).toBe(true);
   });
+
+  it('joins chunks with newlines to keep snippets readable', () => {
+    const script = composeInjectedScript('a();', 'b();');
+
+    expect(script?.split('\n')).toHaveLength(3);
+  });
 });
