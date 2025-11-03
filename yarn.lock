@@ -11804,6 +11804,7 @@ __metadata:
     react-native: 0.81.5
     react-native-builder-bob: ^0.40.14
     react-native-monorepo-config: ^0.3.0
+    react-native-safe-area-context: ^5.6.2
     react-native-web: ~0.21.2
     react-native-webview: ^13.16.0
   languageName: unknown
@@ -11836,7 +11837,6 @@ __metadata:
     react: 19.1.0
     react-native: 0.82.1
     react-native-builder-bob: ^0.40.14
-    react-native-safe-area-context: ^5.6.2
     react-native-webview: ^13.16.0
     react-test-renderer: 19.1.0
     release-it: ^19.0.5
