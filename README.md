@@ -122,10 +122,6 @@ This project uses [react-native-builder-bob](https://github.com/callstack/react-
 > [!CAUTION]
 > 🔬 Before submitting PRs that touch the bridge script, please test the example app on both iOS and Android to catch edge cases with interactive embeds.
 
-## 🧑‍💻 Maintainer
-
-- Mateus Andrade ([@mCodex](https://github.com/mCodex))
-
 ## 📄 License
 
 MIT © [Mateus Andrade](https://github.com/mCodex)
