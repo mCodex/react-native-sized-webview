@@ -46,8 +46,25 @@
   },
   "keywords": [
     "react-native",
+    "webview",
     "ios",
-    "android"
+    "android",
+    "auto-size",
+    "auto-height",
+    "responsive",
+    "html-rendering",
+    "web-content",
+    "javascript-bridge",
+    "typescript",
+    "component",
+    "hook",
+    "sizing",
+    "layout",
+    "dynamic-height",
+    "content-measurement",
+    "mobile",
+    "native",
+    "performance"
   ],
   "repository": {
     "type": "git",
