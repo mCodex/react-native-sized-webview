@@ -14,8 +14,10 @@ React Native WebView that auto-sizes to match its HTML content—whether you loa
 
 ## ✨ Highlights
 
-- 📐 Auto-measures rendered HTML height on every DOM mutation or resize.
+- 📐 Wrapper-based measurement keeps the WebView content in a dedicated container, so height always reflects the real DOM footprint.
 - 🚀 Modern pipeline powered by `ResizeObserver`, `MutationObserver`, `visualViewport`, and font-load events with graceful fallbacks.
+- 🖼 Media aware: images, iframes, and videos schedule immediate + next-frame re-measures as soon as they finish loading.
+- 🧼 Auto-prunes trailing `<br>`/empty `<p>` tags that CMS editors often append, eliminating phantom spacing.
 - 🧵 Keeps the WebView scroll-disabled so outer `ScrollView`s and gesture handlers stay silky smooth.
 - 🎨 Transparent background by default; style the container however you like.
 - ⚙️ Friendly API with `minHeight`, `containerStyle`, and `onHeightChange` callbacks.
@@ -85,9 +87,16 @@ The example showcases:
 > [!NOTE]
 > 🧩 `scrollEnabled` defaults to `false` so sizing remains deterministic. Only enable it if the WebView should manage its own scroll.
 
+## 🧩 Edge Cases Covered
+
+- Trailing `<br>` and empty `<p>` tags are stripped automatically so CMS exports don’t leave phantom padding.
+- Images, iframes, and videos reschedule measurements the moment they finish loading—perfect for hero images at the end of an article.
+- Wrapper rebuild + fallback timers keep measurements stable even if the remote page rewrites the entire DOM after load.
+
 ## 🧠 How It Works
 
-- Injected bridge observes DOM mutations, layout changes, font loads, and viewport shifts.
+- Injected bridge re-parents all body children into a dedicated wrapper, trims trailing blanks, and observes DOM mutations, layout changes, font loads, and viewport shifts.
+- Media events (images / iframes / video) trigger immediate + next-frame samples so late assets still report accurate heights.
 - Height calculations are debounced via `requestAnimationFrame` and a short idle timer to prevent resize storms.
 - Measurements arrive through `postMessage`, then `useAutoHeight` coalesces them into a single render per frame.
 - Package exports the bridge, hook, and helpers individually, making it easy to build bespoke wrappers when needed.
