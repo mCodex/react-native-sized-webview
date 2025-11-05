@@ -1,6 +1,6 @@
 {
   "name": "react-native-sized-webview",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "React Native WebView that auto-sizes to match its HTML content—whether you load local HTML or full external websites—without manual measurements, timers, or layout flicker.",
   "main": "./lib/module/index.js",
   "module": "./lib/module/index.js",
