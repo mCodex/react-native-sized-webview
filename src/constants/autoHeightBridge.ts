@@ -5,6 +5,7 @@
 export const AUTO_HEIGHT_BRIDGE = `(() => {
   var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
   var WRAPPER_ID = '__RN_SIZED_WEBVIEW_WRAPPER__';
+  var TRACKED_FLAG = '__RN_SIZED_WEBVIEW_MEDIA__';
   var MESSAGE_KEY = '__AUTO_HEIGHT__';
   var ACTIVE_DEBOUNCE_MS = 48;
   var IDLE_DEBOUNCE_MS = 160;
@@ -36,6 +37,19 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
           setTimeout(callback, 0);
         };
 
+  var once = function (fn) {
+    var called = false;
+
+    return function () {
+      if (called) {
+        return;
+      }
+
+      called = true;
+      return fn.apply(this, arguments);
+    };
+  };
+
   var state = {
     frame: null,
     timer: null,
@@ -48,6 +62,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     fallbackDelay: INITIAL_FALLBACK_MS,
     cleanup: [],
     wrapper: null,
+    mediaObserver: null,
   };
 
   window[GLOBAL_KEY] = state;
@@ -104,6 +119,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
     state.cleanup.length = 0;
     state.wrapper = null;
+    state.mediaObserver = null;
     window[GLOBAL_KEY] = undefined;
   };
 
@@ -402,6 +418,32 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     });
   };
 
+  var scheduleMediaMeasure = function () {
+    scheduleMeasure(true);
+    requestFrame(function () {
+      scheduleMeasure(true);
+    });
+  };
+
+  var ensureMediaObserver = function () {
+    if (state.mediaObserver || typeof ResizeObserver !== 'function') {
+      return state.mediaObserver;
+    }
+
+    var observer = new ResizeObserver(function () {
+      scheduleMediaMeasure();
+    });
+
+    state.mediaObserver = observer;
+
+    addCleanup(function () {
+      observer.disconnect();
+      state.mediaObserver = null;
+    });
+
+    return observer;
+  };
+
   var tryTrackMedia = function (element) {
     if (!element || typeof element.tagName !== 'string') {
       return;
@@ -413,16 +455,38 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
     if (trackedMedia) {
       trackedMedia.add(element);
+    } else if (element[TRACKED_FLAG]) {
+      return;
+    } else {
+      try {
+        element[TRACKED_FLAG] = true;
+      } catch (error) {
+        // no-op
+      }
+
+      addCleanup(function () {
+        try {
+          delete element[TRACKED_FLAG];
+        } catch (error) {
+          // no-op
+        }
+      });
+    }
+
+    var observer = ensureMediaObserver();
+    if (observer) {
+      try {
+        observer.observe(element);
+      } catch (error) {
+        // no-op
+      }
     }
 
     var tag = element.tagName.toUpperCase();
 
     if (tag === 'IMG') {
       if (element.complete && element.naturalHeight) {
-        scheduleMeasure(true);
-        requestFrame(function () {
-          scheduleMeasure(true);
-        });
+        scheduleMediaMeasure();
         return;
       }
 
@@ -431,18 +495,19 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       var cleanupLoad = function () {};
       var cleanupError = function () {};
 
-      var onSettled = function () {
+      var finalizeImage = once(function () {
         cleanupLoad();
         cleanupError();
         clearLoading();
-        scheduleMeasure(true);
-        requestFrame(function () {
-          scheduleMeasure(true);
-        });
-      };
+        scheduleMediaMeasure();
+      });
 
-      cleanupLoad = addEvent(element, 'load', onSettled, { once: true });
-      cleanupError = addEvent(element, 'error', onSettled, { once: true });
+      cleanupLoad = addEvent(element, 'load', finalizeImage, { once: true });
+      cleanupError = addEvent(element, 'error', finalizeImage, { once: true });
+
+      if (typeof element.decode === 'function') {
+        element.decode().then(finalizeImage).catch(finalizeImage);
+      }
 
       return;
     }
@@ -453,15 +518,12 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       var cleanupLoadIframe = function () {};
       var cleanupErrorIframe = function () {};
 
-      var onIframe = function () {
+      var onIframe = once(function () {
         cleanupLoadIframe();
         cleanupErrorIframe();
         clearLoading();
-        scheduleMeasure(true);
-        requestFrame(function () {
-          scheduleMeasure(true);
-        });
-      };
+        scheduleMediaMeasure();
+      });
 
       cleanupLoadIframe = addEvent(element, 'load', onIframe, { once: true });
       cleanupErrorIframe = addEvent(element, 'error', onIframe, { once: true });
@@ -469,7 +531,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       try {
         var iframeDoc = element.contentDocument;
         if (iframeDoc && iframeDoc.readyState === 'complete') {
-          scheduleMeasure(true);
+          scheduleMediaMeasure();
           requestFrame(onIframe);
         }
       } catch (error) {
@@ -484,10 +546,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
         typeof element.readyState === 'number' &&
         element.readyState >= 2
       ) {
-        scheduleMeasure(true);
-        requestFrame(function () {
-          scheduleMeasure(true);
-        });
+        scheduleMediaMeasure();
         return;
       }
 
@@ -497,16 +556,13 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       var cleanupMetadata = function () {};
       var cleanupEnded = function () {};
 
-      var onVideo = function () {
+      var onVideo = once(function () {
         cleanupData();
         cleanupMetadata();
         cleanupEnded();
         clearLoading();
-        scheduleMeasure(true);
-        requestFrame(function () {
-          scheduleMeasure(true);
-        });
-      };
+        scheduleMediaMeasure();
+      });
 
       cleanupData = addEvent(element, 'loadeddata', onVideo, { once: true });
       cleanupMetadata = addEvent(element, 'loadedmetadata', onVideo, {
