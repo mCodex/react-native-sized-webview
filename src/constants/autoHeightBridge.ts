@@ -50,17 +50,34 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   const measureDocumentHeight = () => {
     const html = document.documentElement;
     const body = document.body;
+    const isAndroid = navigator.userAgent.includes('Android');
 
     // Ensure body has proper styling for measurement
     if (body) {
       body.style.height = 'auto';
       body.style.minHeight = '100%';
+      body.style.width = '100%';
+    }
+
+    if (html) {
+      html.style.height = 'auto';
     }
 
     // Force layout recalculation
-    const forceLayout = html.offsetHeight;
+    const forceLayout = html.offsetHeight || body.offsetHeight;
+
+    // Use getBoundingClientRect for more accurate measurement
+    const htmlRect = html.getBoundingClientRect();
+    const bodyRect = body ? body.getBoundingClientRect() : { height: 0 };
+
+    if (isAndroid) {
+      // On Android, prefer getBoundingClientRect for better accuracy
+      return Math.max(htmlRect.height, bodyRect.height);
+    }
 
     return Math.max(
+      htmlRect.height,
+      bodyRect.height,
       html.scrollHeight,
       html.offsetHeight,
       body ? body.scrollHeight : 0,
