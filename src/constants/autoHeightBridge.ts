@@ -41,6 +41,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     microtask: false,
     pendingLoads: 0,
     lastHeight: 0,
+    lastCssHeight: 0,
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
     cleanup: [],
@@ -223,21 +224,63 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return Math.max(0, Math.ceil(readMaxValue(values)));
   };
 
+  var normalizeHeight = function (height) {
+    if (!height || !isFinite(height) || height <= 0) {
+      return 0;
+    }
+
+    var pixelRatio =
+      typeof window.devicePixelRatio === 'number' &&
+      window.devicePixelRatio > 0
+        ? window.devicePixelRatio
+        : 1;
+
+    var viewport = window.visualViewport;
+    var viewportScale =
+      viewport && typeof viewport.scale === 'number' && viewport.scale > 0
+        ? viewport.scale
+        : 1;
+
+    var density = pixelRatio / viewportScale;
+    if (!density || density <= 0) {
+      density = 1;
+    }
+
+    var normalized = Math.ceil(height / density + 0.01);
+
+    if (!isFinite(normalized) || normalized <= 0) {
+      return 0;
+    }
+
+    if (normalized > 2147483647) {
+      normalized = 2147483647;
+    }
+
+    return normalized;
+  };
+
   var postHeight = function (height) {
     if (!height || height <= 0) {
       return;
     }
 
-    if (state.lastHeight === height) {
+    state.lastCssHeight = height;
+
+    var normalized = normalizeHeight(height);
+    if (!normalized) {
       return;
     }
 
-    state.lastHeight = height;
+    if (state.lastHeight === normalized) {
+      return;
+    }
+
+    state.lastHeight = normalized;
 
     try {
       var channel = window.ReactNativeWebView;
       if (channel && typeof channel.postMessage === 'function') {
-        channel.postMessage(String(height));
+        channel.postMessage(String(normalized));
       }
     } catch (error) {
       // no-op
