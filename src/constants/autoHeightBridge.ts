@@ -217,16 +217,16 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     window.__AUTO_HEIGHT_VISUAL_VIEWPORT_HANDLER__ = handler;
   };
 
-  const attachFontLoadListeners = () => {
-    const fonts = document.fonts;
-    if (!fonts || !fonts.addEventListener) {
+  const attachIframeLoadListeners = () => {
+    const iframes = document.querySelectorAll('iframe');
+    if (!iframes.length) {
       return;
     }
 
     const handler = () => scheduleHeightUpdate();
-    fonts.addEventListener('loadingdone', handler);
-    fonts.addEventListener('loadingerror', handler);
-    window.__AUTO_HEIGHT_FONT_HANDLER__ = handler;
+    for (let index = 0; index < iframes.length; index += 1) {
+      iframes[index].addEventListener('load', handler);
+    }
   };
 
   const attachGlobalListeners = () => {
@@ -251,6 +251,8 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     attachResizeObserver();
     attachVisualViewport();
     attachFontLoadListeners();
+    attachImageLoadListeners();
+    attachIframeLoadListeners();
     attachGlobalListeners();
     scheduleHeightUpdate();
 
