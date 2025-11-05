@@ -47,41 +47,27 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return 0;
   };
 
+  const getMaxHeight = (element) => {
+    if (!element) {
+      return 0;
+    }
+    return Math.max(
+      element.scrollHeight || 0,
+      element.offsetHeight || 0,
+      element.clientHeight || 0
+    );
+  };
+
   const measureDocumentHeight = () => {
     const scrollingElement = document.scrollingElement;
     const body = document.body;
     const html = document.documentElement;
 
-    let height = 0;
-
-    if (scrollingElement) {
-      height = Math.max(
-        height,
-        scrollingElement.scrollHeight,
-        scrollingElement.offsetHeight,
-        scrollingElement.clientHeight,
-      );
-    }
-
-    if (body) {
-      height = Math.max(
-        height,
-        body.scrollHeight,
-        body.offsetHeight,
-        body.clientHeight,
-      );
-    }
-
-    if (html) {
-      height = Math.max(
-        height,
-        html.scrollHeight,
-        html.offsetHeight,
-        html.clientHeight,
-      );
-    }
-
-    return Math.ceil(height);
+    return Math.max(
+      getMaxHeight(scrollingElement),
+      getMaxHeight(body),
+      getMaxHeight(html)
+    );
   };
 
   const postHeight = (rawHeight) => {
@@ -89,16 +75,17 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       return;
     }
 
-    const nextHeight = Math.ceil(rawHeight);
+    const pixelRatio = window.devicePixelRatio || 1;
+    const adjustedHeight = Math.ceil(rawHeight / pixelRatio);
 
-    if (window.__AUTO_HEIGHT_LAST__ === nextHeight) {
+    if (window.__AUTO_HEIGHT_LAST__ === adjustedHeight) {
       return;
     }
 
-    window.__AUTO_HEIGHT_LAST__ = nextHeight;
+    window.__AUTO_HEIGHT_LAST__ = adjustedHeight;
 
     try {
-      window.ReactNativeWebView?.postMessage(String(nextHeight));
+      window.ReactNativeWebView?.postMessage(String(adjustedHeight));
     } catch (error) {
       // no-op
     }
