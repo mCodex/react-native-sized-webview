@@ -42,6 +42,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     pendingLoads: 0,
     lastHeight: 0,
     lastCssHeight: 0,
+    anomalyCount: 0,
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
     cleanup: [],
@@ -224,41 +225,6 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return Math.max(0, Math.ceil(readMaxValue(values)));
   };
 
-  var normalizeHeight = function (height) {
-    if (!height || !isFinite(height) || height <= 0) {
-      return 0;
-    }
-
-    var pixelRatio =
-      typeof window.devicePixelRatio === 'number' &&
-      window.devicePixelRatio > 0
-        ? window.devicePixelRatio
-        : 1;
-
-    var viewport = window.visualViewport;
-    var viewportScale =
-      viewport && typeof viewport.scale === 'number' && viewport.scale > 0
-        ? viewport.scale
-        : 1;
-
-    var density = pixelRatio / viewportScale;
-    if (!density || density <= 0) {
-      density = 1;
-    }
-
-    var normalized = Math.ceil(height / density + 0.01);
-
-    if (!isFinite(normalized) || normalized <= 0) {
-      return 0;
-    }
-
-    if (normalized > 2147483647) {
-      normalized = 2147483647;
-    }
-
-    return normalized;
-  };
-
   var postHeight = function (height) {
     if (!height || height <= 0) {
       return;
@@ -266,21 +232,32 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
     state.lastCssHeight = height;
 
-    var normalized = normalizeHeight(height);
-    if (!normalized) {
+    var sanitized = Math.ceil(height);
+
+    if (!isFinite(sanitized) || sanitized <= 0) {
       return;
     }
 
-    if (state.lastHeight === normalized) {
+    if (sanitized > 100000) {
+      state.anomalyCount += 1;
+      if (state.anomalyCount < 3) {
+        scheduleMeasure(true);
+        return;
+      }
+    } else {
+      state.anomalyCount = 0;
+    }
+
+    if (state.lastHeight === sanitized) {
       return;
     }
 
-    state.lastHeight = normalized;
+    state.lastHeight = sanitized;
 
     try {
       var channel = window.ReactNativeWebView;
       if (channel && typeof channel.postMessage === 'function') {
-        channel.postMessage(String(normalized));
+        channel.postMessage(String(sanitized));
       }
     } catch (error) {
       // no-op
