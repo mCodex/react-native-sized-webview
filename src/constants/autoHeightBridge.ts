@@ -156,6 +156,50 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return id;
   };
 
+  var pruneTrailingNodes = function (container) {
+    if (!container) {
+      return;
+    }
+
+    var isWhitespaceText = function (node) {
+      return node && node.nodeType === 3 && (!node.textContent || !node.textContent.trim());
+    };
+
+    var isTrimmableElement = function (node) {
+      if (!node || node.nodeType !== 1) {
+        return false;
+      }
+
+      var tag = (node.tagName || '').toUpperCase();
+      if (tag === 'BR') {
+        return true;
+      }
+
+      if (tag === 'P') {
+        return !node.textContent || !node.textContent.trim();
+      }
+
+      return false;
+    };
+
+    var removed = false;
+    var current = container.lastChild;
+    while (current) {
+      if (isWhitespaceText(current) || isTrimmableElement(current)) {
+        var previous = current.previousSibling;
+        container.removeChild(current);
+        current = previous;
+        removed = true;
+        continue;
+      }
+      break;
+    }
+
+    if (removed) {
+      scheduleMeasure(true);
+    }
+  };
+
   var trackedMedia =
     typeof WeakSet === 'function' ? new WeakSet() : undefined;
 
@@ -196,6 +240,8 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var html = document.documentElement;
     var body = document.body;
     var wrapper = ensureWrapper();
+
+    pruneTrailingNodes(wrapper);
 
     var values = [];
 
@@ -373,6 +419,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
     if (tag === 'IMG') {
       if (element.complete && element.naturalHeight) {
+        scheduleMeasure(true);
         requestFrame(function () {
           scheduleMeasure(true);
         });
@@ -389,6 +436,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
         cleanupError();
         clearLoading();
         scheduleMeasure(true);
+        requestFrame(function () {
+          scheduleMeasure(true);
+        });
       };
 
       cleanupLoad = addEvent(element, 'load', onSettled, { once: true });
@@ -408,6 +458,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
         cleanupErrorIframe();
         clearLoading();
         scheduleMeasure(true);
+        requestFrame(function () {
+          scheduleMeasure(true);
+        });
       };
 
       cleanupLoadIframe = addEvent(element, 'load', onIframe, { once: true });
@@ -416,6 +469,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       try {
         var iframeDoc = element.contentDocument;
         if (iframeDoc && iframeDoc.readyState === 'complete') {
+          scheduleMeasure(true);
           requestFrame(onIframe);
         }
       } catch (error) {
@@ -430,6 +484,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
         typeof element.readyState === 'number' &&
         element.readyState >= 2
       ) {
+        scheduleMeasure(true);
         requestFrame(function () {
           scheduleMeasure(true);
         });
@@ -448,6 +503,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
         cleanupEnded();
         clearLoading();
         scheduleMeasure(true);
+        requestFrame(function () {
+          scheduleMeasure(true);
+        });
       };
 
       cleanupData = addEvent(element, 'loadeddata', onVideo, { once: true });
@@ -548,6 +606,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     }
 
     state.wrapper = wrapper;
+    pruneTrailingNodes(wrapper);
     return wrapper;
   };
 
@@ -600,6 +659,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
           }
         }
       }
+        pruneTrailingNodes(state.wrapper);
     });
 
     var target = document.documentElement || document.body;
@@ -735,6 +795,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   var bootstrap = function () {
     applyBaseStyles();
     var wrapper = ensureWrapper();
+    pruneTrailingNodes(wrapper);
     scanForMedia(wrapper || document);
     observeMutations();
     observeResize();
