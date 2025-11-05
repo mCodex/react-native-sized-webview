@@ -18,6 +18,7 @@ React Native WebView that auto-sizes to match its HTML content—whether you loa
 - 🚀 Modern pipeline powered by `ResizeObserver`, `MutationObserver`, `visualViewport`, and font-load events with graceful fallbacks.
 - 🖼 Media aware: images, iframes, and videos schedule immediate + next-frame re-measures as soon as they finish loading.
 - 🧼 Auto-prunes trailing `<br>`/empty `<p>` tags that CMS editors often append, eliminating phantom spacing.
+- 🛡️ Sanity guard clamps runaway heights and retries with the last good value, so flaky pages never lock your layout.
 - 🧵 Keeps the WebView scroll-disabled so outer `ScrollView`s and gesture handlers stay silky smooth.
 - 🎨 Transparent background by default; style the container however you like.
 - ⚙️ Friendly API with `minHeight`, `containerStyle`, and `onHeightChange` callbacks.
@@ -92,11 +93,13 @@ The example showcases:
 - Trailing `<br>` and empty `<p>` tags are stripped automatically so CMS exports don’t leave phantom padding.
 - Images, iframes, and videos reschedule measurements the moment they finish loading—perfect for hero images at the end of an article.
 - Wrapper rebuild + fallback timers keep measurements stable even if the remote page rewrites the entire DOM after load.
+- Measurements above safe bounds are retried and then clamped to the last known good height, protecting against broken markup or third-party scripts.
 
 ## 🧠 How It Works
 
 - Injected bridge re-parents all body children into a dedicated wrapper, trims trailing blanks, and observes DOM mutations, layout changes, font loads, and viewport shifts.
 - Media events (images / iframes / video) trigger immediate + next-frame samples so late assets still report accurate heights.
+- Media elements stay observed via `ResizeObserver` + decode promises, catching intrinsic size changes without duplicate network requests.
 - Height calculations are debounced via `requestAnimationFrame` and a short idle timer to prevent resize storms.
 - Measurements arrive through `postMessage`, then `useAutoHeight` coalesces them into a single render per frame.
 - Package exports the bridge, hook, and helpers individually, making it easy to build bespoke wrappers when needed.

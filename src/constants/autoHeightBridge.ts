@@ -11,6 +11,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   var IDLE_DEBOUNCE_MS = 160;
   var INITIAL_FALLBACK_MS = 600;
   var MAX_FALLBACK_MS = 4000;
+  var MAX_REASONABLE_HEIGHT = 120000;
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return;
@@ -274,15 +275,16 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       );
     };
 
-    collect(wrapper);
-    if (body && body !== wrapper) {
-      collect(body);
+    if (wrapper) {
+      collect(wrapper);
+    } else {
+      if (body) {
+        collect(body);
+      }
+      if (html && html !== body) {
+        collect(html);
+      }
     }
-    if (html && html !== wrapper) {
-      collect(html);
-    }
-
-    values.push(window.innerHeight || 0);
 
     if (!values.length) {
       return 0;
@@ -304,11 +306,18 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       return;
     }
 
-    if (sanitized > 100000) {
+    if (sanitized > MAX_REASONABLE_HEIGHT) {
       state.anomalyCount += 1;
-      if (state.anomalyCount < 3) {
+
+      if (state.anomalyCount <= 5) {
         scheduleMeasure(true);
         return;
+      }
+
+      if (state.lastHeight > 0 && state.lastHeight <= MAX_REASONABLE_HEIGHT) {
+        sanitized = state.lastHeight;
+      } else {
+        sanitized = MAX_REASONABLE_HEIGHT;
       }
     } else {
       state.anomalyCount = 0;
