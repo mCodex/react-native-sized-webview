@@ -4,6 +4,7 @@
  */
 export const AUTO_HEIGHT_BRIDGE = `(() => {
   var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
+  var WRAPPER_ID = '__RN_SIZED_WEBVIEW_WRAPPER__';
   var MESSAGE_KEY = '__AUTO_HEIGHT__';
   var ACTIVE_DEBOUNCE_MS = 48;
   var IDLE_DEBOUNCE_MS = 160;
@@ -46,6 +47,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
     cleanup: [],
+    wrapper: null,
   };
 
   window[GLOBAL_KEY] = state;
@@ -101,9 +103,12 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     }
 
     state.cleanup.length = 0;
+    state.wrapper = null;
+    window[GLOBAL_KEY] = undefined;
   };
 
   state.refresh = function () {
+    ensureWrapper();
     scheduleMeasure(true);
   };
 
@@ -190,36 +195,35 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   var measureHeight = function () {
     var html = document.documentElement;
     var body = document.body;
+    var wrapper = ensureWrapper();
 
-    if (!html) {
+    var values = [];
+
+    var collect = function (element) {
+      if (!element) {
+        return;
+      }
+
+      values.push(
+        readRectHeight(element),
+        element.scrollHeight || 0,
+        element.offsetHeight || 0,
+        element.clientHeight || 0
+      );
+    };
+
+    collect(wrapper);
+    if (body && body !== wrapper) {
+      collect(body);
+    }
+    if (html && html !== wrapper) {
+      collect(html);
+    }
+
+    values.push(window.innerHeight || 0);
+
+    if (!values.length) {
       return 0;
-    }
-
-    var values = [
-      readRectHeight(html),
-      html.scrollHeight,
-      html.offsetHeight,
-      html.clientHeight,
-      window.innerHeight || 0,
-    ];
-
-    var scroller = document.scrollingElement;
-    if (scroller && scroller !== html && scroller !== body) {
-      values.push(
-        readRectHeight(scroller),
-        scroller.scrollHeight,
-        scroller.offsetHeight,
-        scroller.clientHeight
-      );
-    }
-
-    if (body && body !== html) {
-      values.push(
-        readRectHeight(body),
-        body.scrollHeight,
-        body.offsetHeight,
-        body.clientHeight
-      );
     }
 
     return Math.max(0, Math.ceil(readMaxValue(values)));
@@ -480,10 +484,11 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var body = document.body;
 
     if (html) {
-      html.style.overflow = 'hidden';
-      html.style.height = 'auto';
-      if (!html.style.minHeight || html.style.minHeight === '0') {
-        html.style.minHeight = '100%';
+      if (!html.style.overflow) {
+        html.style.overflow = 'hidden';
+      }
+      if (!html.style.height) {
+        html.style.height = 'auto';
       }
       if (!html.style.backgroundColor) {
         html.style.backgroundColor = 'transparent';
@@ -494,15 +499,56 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       if (!body.style.margin) {
         body.style.margin = '0';
       }
-      body.style.width = '100%';
-      body.style.height = 'auto';
-      if (!body.style.minHeight || body.style.minHeight === '0') {
-        body.style.minHeight = '100%';
+      if (!body.style.padding) {
+        body.style.padding = '0';
+      }
+      if (!body.style.width) {
+        body.style.width = '100%';
+      }
+      if (!body.style.height) {
+        body.style.height = 'auto';
       }
       if (!body.style.backgroundColor) {
         body.style.backgroundColor = 'transparent';
       }
     }
+  };
+
+  var ensureWrapper = function () {
+    if (state.wrapper && document.contains(state.wrapper)) {
+      return state.wrapper;
+    }
+
+    var body = document.body;
+    if (!body) {
+      return null;
+    }
+
+    var existing = document.getElementById(WRAPPER_ID);
+    if (existing) {
+      state.wrapper = existing;
+      return existing;
+    }
+
+    var wrapper = document.createElement('div');
+    wrapper.id = WRAPPER_ID;
+    wrapper.style.width = '100%';
+    wrapper.style.boxSizing = 'border-box';
+
+    var nodes = [];
+    while (body.firstChild) {
+      nodes.push(body.firstChild);
+      body.removeChild(body.firstChild);
+    }
+
+    body.appendChild(wrapper);
+
+    for (var index = 0; index < nodes.length; index += 1) {
+      wrapper.appendChild(nodes[index]);
+    }
+
+    state.wrapper = wrapper;
+    return wrapper;
   };
 
   var ensureDomReady = function (callback) {
@@ -536,6 +582,10 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
     var mutationObserver = new MutationObserver(function (mutations) {
       requestDebouncedMeasure();
+
+      if (!state.wrapper || !document.contains(state.wrapper)) {
+        ensureWrapper();
+      }
 
       for (var index = 0; index < mutations.length; index += 1) {
         var mutation = mutations[index];
@@ -578,14 +628,19 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       requestDebouncedMeasure();
     });
 
+    var wrapper = ensureWrapper();
     var html = document.documentElement;
     var body = document.body;
+
+    if (wrapper) {
+      resizeObserver.observe(wrapper);
+    }
 
     if (html) {
       resizeObserver.observe(html);
     }
 
-    if (body && body !== html) {
+    if (body && body !== html && body !== wrapper) {
       resizeObserver.observe(body);
     }
 
@@ -650,6 +705,18 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
       if (event.data === MESSAGE_KEY) {
         scheduleMeasure(true);
+        return;
+      }
+
+      if (typeof event.data === 'string') {
+        try {
+          var parsed = JSON.parse(event.data);
+          if (parsed && parsed.topic === MESSAGE_KEY) {
+            scheduleMeasure(true);
+          }
+        } catch (error) {
+          // Ignore non-JSON payloads.
+        }
       }
     });
   };
@@ -667,7 +734,8 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
 
   var bootstrap = function () {
     applyBaseStyles();
-    scanForMedia(document);
+    var wrapper = ensureWrapper();
+    scanForMedia(wrapper || document);
     observeMutations();
     observeResize();
     observeViewport();
