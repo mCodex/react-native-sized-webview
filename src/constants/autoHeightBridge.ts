@@ -3,177 +3,540 @@
  * The script is designed to be idempotent and resilient to repeated injections.
  */
 export const AUTO_HEIGHT_BRIDGE = `(() => {
-  if (window.__AUTO_HEIGHT_INITIALIZED__) {
+  var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
+  var MESSAGE_KEY = '__AUTO_HEIGHT__';
+  var ACTIVE_DEBOUNCE_MS = 48;
+  var IDLE_DEBOUNCE_MS = 160;
+  var INITIAL_FALLBACK_MS = 600;
+  var MAX_FALLBACK_MS = 4000;
+
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
     return;
   }
 
-  window.__AUTO_HEIGHT_INITIALIZED__ = true;
-  const messageKey = '__AUTO_HEIGHT__';
-  const DEBOUNCE_DELAY_MS = 80;
-
-  const ensureArray = (maybeIterable) => {
-    if (!maybeIterable) {
-      return [];
+  if (window[GLOBAL_KEY]) {
+    try {
+      window[GLOBAL_KEY].refresh();
+    } catch (error) {
+      // no-op
     }
+    return;
+  }
 
-    return Array.isArray(maybeIterable) ? maybeIterable : [maybeIterable];
+  var queueMicro =
+    typeof queueMicrotask === 'function'
+      ? queueMicrotask
+      : function (callback) {
+          if (typeof Promise === 'function') {
+            Promise.resolve().then(callback).catch(function () {});
+            return;
+          }
+
+          setTimeout(callback, 0);
+        };
+
+  var state = {
+    frame: null,
+    timer: null,
+    microtask: false,
+    pendingLoads: 0,
+    lastHeight: 0,
+    fallbackTimer: null,
+    fallbackDelay: INITIAL_FALLBACK_MS,
+    cleanup: [],
   };
 
-  const readObserverBlockSize = (entry) => {
-    if (!entry) {
+  window[GLOBAL_KEY] = state;
+
+  var requestFrame = function (callback) {
+    if (typeof window.requestAnimationFrame === 'function') {
+      return window.requestAnimationFrame(callback);
+    }
+
+    return window.setTimeout(function () {
+      callback(Date.now());
+    }, 16);
+  };
+
+  var cancelFrame = function (id) {
+    if (typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(id);
+      return;
+    }
+
+    clearTimeout(id);
+  };
+
+  var addCleanup = function (fn) {
+    if (typeof fn === 'function') {
+      state.cleanup.push(fn);
+    }
+  };
+
+  var cleanupAll = function () {
+    if (state.frame != null) {
+      cancelFrame(state.frame);
+      state.frame = null;
+    }
+
+    if (state.timer != null) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+
+    if (state.fallbackTimer != null) {
+      clearTimeout(state.fallbackTimer);
+      state.fallbackTimer = null;
+    }
+
+    for (var index = 0; index < state.cleanup.length; index += 1) {
+      try {
+        var fn = state.cleanup[index];
+        fn && fn();
+      } catch (error) {
+        // no-op
+      }
+    }
+
+    state.cleanup.length = 0;
+  };
+
+  state.refresh = function () {
+    scheduleMeasure(true);
+  };
+
+  state.destroy = cleanupAll;
+
+  var addEvent = function (target, type, handler, options) {
+    if (!target || typeof target.addEventListener !== 'function') {
+      return function () {};
+    }
+
+    var removed = false;
+    var wrapped = function (event) {
+      handler(event);
+    };
+
+    try {
+      target.addEventListener(type, wrapped, options);
+    } catch (error) {
+      target.addEventListener(type, wrapped);
+    }
+
+    var remove = function () {
+      if (removed) {
+        return;
+      }
+
+      removed = true;
+
+      try {
+        target.removeEventListener(type, wrapped, options);
+      } catch (error) {
+        target.removeEventListener(type, wrapped);
+      }
+    };
+
+    addCleanup(remove);
+    return remove;
+  };
+
+  var scheduleTimeout = function (callback, delay) {
+    var id = window.setTimeout(callback, delay);
+    addCleanup(function () {
+      clearTimeout(id);
+    });
+    return id;
+  };
+
+  var trackedMedia =
+    typeof WeakSet === 'function' ? new WeakSet() : undefined;
+
+  var markLoading = function () {
+    state.pendingLoads += 1;
+    scheduleFallback();
+  };
+
+  var clearLoading = function () {
+    if (state.pendingLoads > 0) {
+      state.pendingLoads -= 1;
+    }
+  };
+
+  var readRectHeight = function (element) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') {
       return 0;
     }
 
-    const borderSize = ensureArray(entry.borderBoxSize);
-    for (let index = 0; index < borderSize.length; index += 1) {
-      const size = borderSize[index];
-      if (size && typeof size.blockSize === 'number') {
-        return size.blockSize;
-      }
-    }
-
-    const contentSize = ensureArray(entry.contentBoxSize);
-    for (let index = 0; index < contentSize.length; index += 1) {
-      const size = contentSize[index];
-      if (size && typeof size.blockSize === 'number') {
-        return size.blockSize;
-      }
-    }
-
-    if (entry.contentRect && typeof entry.contentRect.height === 'number') {
-      return entry.contentRect.height;
-    }
-
-    return 0;
+    var rect = element.getBoundingClientRect();
+    return typeof rect.height === 'number' ? rect.height : 0;
   };
 
-  const measureDocumentHeight = () => {
-    const html = document.documentElement;
-    const body = document.body;
-    const isAndroid = navigator.userAgent.includes('Android');
+  var readMaxValue = function (values) {
+    var max = 0;
 
-    // Ensure body has proper styling for measurement
-    if (body) {
-      body.style.height = 'auto';
-      body.style.minHeight = '100%';
-      body.style.width = '100%';
+    for (var index = 0; index < values.length; index += 1) {
+      var value = values[index];
+      if (typeof value === 'number' && value > max) {
+        max = value;
+      }
     }
 
-    if (html) {
-      html.style.height = 'auto';
+    return max;
+  };
+
+  var measureHeight = function () {
+    var html = document.documentElement;
+    var body = document.body;
+
+    if (!html) {
+      return 0;
     }
 
-    // Force layout recalculation
-    const forceLayout = html.offsetHeight || body.offsetHeight;
-
-    // Use getBoundingClientRect for more accurate measurement
-    const htmlRect = html.getBoundingClientRect();
-    const bodyRect = body ? body.getBoundingClientRect() : { height: 0 };
-
-    if (isAndroid) {
-      // On Android, prefer getBoundingClientRect for better accuracy
-      return Math.max(htmlRect.height, bodyRect.height);
-    }
-
-    return Math.max(
-      htmlRect.height,
-      bodyRect.height,
+    var values = [
+      readRectHeight(html),
       html.scrollHeight,
       html.offsetHeight,
-      body ? body.scrollHeight : 0,
-      body ? body.offsetHeight : 0
-    );
+      html.clientHeight,
+      window.innerHeight || 0,
+    ];
+
+    var scroller = document.scrollingElement;
+    if (scroller && scroller !== html && scroller !== body) {
+      values.push(
+        readRectHeight(scroller),
+        scroller.scrollHeight,
+        scroller.offsetHeight,
+        scroller.clientHeight
+      );
+    }
+
+    if (body && body !== html) {
+      values.push(
+        readRectHeight(body),
+        body.scrollHeight,
+        body.offsetHeight,
+        body.clientHeight
+      );
+    }
+
+    return Math.max(0, Math.ceil(readMaxValue(values)));
   };
 
-  const postHeight = (rawHeight) => {
-    if (!rawHeight || rawHeight <= 0) {
+  var postHeight = function (height) {
+    if (!height || height <= 0) {
       return;
     }
 
-    const pixelRatio = window.devicePixelRatio || 1;
-    const adjustedHeight = Math.ceil(rawHeight / pixelRatio);
-
-    if (window.__AUTO_HEIGHT_LAST__ === adjustedHeight) {
+    if (state.lastHeight === height) {
       return;
     }
 
-    window.__AUTO_HEIGHT_LAST__ = adjustedHeight;
+    state.lastHeight = height;
 
     try {
-      window.ReactNativeWebView?.postMessage(String(adjustedHeight));
+      var channel = window.ReactNativeWebView;
+      if (channel && typeof channel.postMessage === 'function') {
+        channel.postMessage(String(height));
+      }
     } catch (error) {
       // no-op
     }
   };
 
-  const updateHeightFromDocument = () => {
-    const measured = measureDocumentHeight();
-
-    if (measured) {
-      postHeight(measured);
+  var resetFallback = function () {
+    state.fallbackDelay = INITIAL_FALLBACK_MS;
+    if (state.fallbackTimer != null) {
+      clearTimeout(state.fallbackTimer);
+      state.fallbackTimer = null;
     }
+    scheduleFallback();
   };
 
-  const runHeightUpdate = () => {
-    if (window.__AUTO_HEIGHT_RAF__) {
-      cancelAnimationFrame(window.__AUTO_HEIGHT_RAF__);
+  var scheduleFallback = function () {
+    if (state.fallbackTimer != null) {
+      return;
     }
 
-    window.__AUTO_HEIGHT_RAF__ = requestAnimationFrame(() => {
-      window.__AUTO_HEIGHT_RAF__ = undefined;
-      updateHeightFromDocument();
+    state.fallbackTimer = window.setTimeout(function () {
+      state.fallbackTimer = null;
+      scheduleMeasure(true);
+      state.fallbackDelay = Math.min(
+        MAX_FALLBACK_MS,
+        Math.floor(state.fallbackDelay * 1.5)
+      );
+      scheduleFallback();
+    }, state.fallbackDelay);
+  };
+
+  var runMeasure = function () {
+    state.frame = null;
+    var height = measureHeight();
+    if (height) {
+      postHeight(height);
+    }
+    resetFallback();
+  };
+
+  var scheduleMeasure = function (force) {
+    if (force) {
+      if (state.frame != null) {
+        cancelFrame(state.frame);
+        state.frame = null;
+      }
+
+      if (state.timer != null) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+
+      runMeasure();
+      return;
+    }
+
+    if (state.frame != null) {
+      return;
+    }
+
+    state.frame = requestFrame(runMeasure);
+  };
+
+  var getDebounceDelay = function () {
+    return state.pendingLoads > 0 ? ACTIVE_DEBOUNCE_MS : IDLE_DEBOUNCE_MS;
+  };
+
+  var debouncedMeasure = function () {
+    scheduleMeasure(false);
+
+    if (state.timer != null) {
+      clearTimeout(state.timer);
+    }
+
+    state.timer = window.setTimeout(function () {
+      state.timer = null;
+      scheduleMeasure(true);
+    }, getDebounceDelay());
+  };
+
+  var requestDebouncedMeasure = function () {
+    scheduleFallback();
+
+    if (state.microtask) {
+      return;
+    }
+
+    state.microtask = true;
+    queueMicro(function () {
+      state.microtask = false;
+      debouncedMeasure();
     });
   };
 
-  const scheduleHeightUpdate = () => {
-    if (!window.__AUTO_HEIGHT_PENDING__) {
-      window.__AUTO_HEIGHT_PENDING__ = true;
-      runHeightUpdate();
+  var tryTrackMedia = function (element) {
+    if (!element || typeof element.tagName !== 'string') {
+      return;
     }
 
-    if (window.__AUTO_HEIGHT_TIMEOUT__) {
-      clearTimeout(window.__AUTO_HEIGHT_TIMEOUT__);
+    if (trackedMedia && trackedMedia.has(element)) {
+      return;
     }
 
-    window.__AUTO_HEIGHT_TIMEOUT__ = setTimeout(() => {
-      window.__AUTO_HEIGHT_TIMEOUT__ = undefined;
-      window.__AUTO_HEIGHT_PENDING__ = false;
-      runHeightUpdate();
-    }, DEBOUNCE_DELAY_MS);
+    if (trackedMedia) {
+      trackedMedia.add(element);
+    }
+
+    var tag = element.tagName.toUpperCase();
+
+    if (tag === 'IMG') {
+      if (element.complete && element.naturalHeight) {
+        requestFrame(function () {
+          scheduleMeasure(true);
+        });
+        return;
+      }
+
+      markLoading();
+
+      var cleanupLoad = function () {};
+      var cleanupError = function () {};
+
+      var onSettled = function () {
+        cleanupLoad();
+        cleanupError();
+        clearLoading();
+        scheduleMeasure(true);
+      };
+
+      cleanupLoad = addEvent(element, 'load', onSettled, { once: true });
+      cleanupError = addEvent(element, 'error', onSettled, { once: true });
+
+      return;
+    }
+
+    if (tag === 'IFRAME') {
+      markLoading();
+
+      var cleanupLoadIframe = function () {};
+      var cleanupErrorIframe = function () {};
+
+      var onIframe = function () {
+        cleanupLoadIframe();
+        cleanupErrorIframe();
+        clearLoading();
+        scheduleMeasure(true);
+      };
+
+      cleanupLoadIframe = addEvent(element, 'load', onIframe, { once: true });
+      cleanupErrorIframe = addEvent(element, 'error', onIframe, { once: true });
+
+      try {
+        var iframeDoc = element.contentDocument;
+        if (iframeDoc && iframeDoc.readyState === 'complete') {
+          requestFrame(onIframe);
+        }
+      } catch (error) {
+        // no-op
+      }
+
+      return;
+    }
+
+    if (tag === 'VIDEO') {
+      if (
+        typeof element.readyState === 'number' &&
+        element.readyState >= 2
+      ) {
+        requestFrame(function () {
+          scheduleMeasure(true);
+        });
+        return;
+      }
+
+      markLoading();
+
+      var cleanupData = function () {};
+      var cleanupMetadata = function () {};
+      var cleanupEnded = function () {};
+
+      var onVideo = function () {
+        cleanupData();
+        cleanupMetadata();
+        cleanupEnded();
+        clearLoading();
+        scheduleMeasure(true);
+      };
+
+      cleanupData = addEvent(element, 'loadeddata', onVideo, { once: true });
+      cleanupMetadata = addEvent(element, 'loadedmetadata', onVideo, {
+        once: true,
+      });
+      cleanupEnded = addEvent(element, 'ended', onVideo, { once: true });
+
+      return;
+    }
   };
 
-  const applyBaseStyles = () => {
-    const html = document.documentElement;
+  var scanForMedia = function (root) {
+    if (!root) {
+      return;
+    }
+
+    if (root.nodeType === 1) {
+      tryTrackMedia(root);
+    }
+
+    if (typeof root.querySelectorAll !== 'function') {
+      return;
+    }
+
+    var nodes = root.querySelectorAll('img, video, iframe');
+    for (var index = 0; index < nodes.length; index += 1) {
+      tryTrackMedia(nodes[index]);
+    }
+  };
+
+  var applyBaseStyles = function () {
+    var html = document.documentElement;
+    var body = document.body;
+
     if (html) {
       html.style.overflow = 'hidden';
-      html.style.backgroundColor = 'transparent';
       html.style.height = 'auto';
+      if (!html.style.minHeight || html.style.minHeight === '0') {
+        html.style.minHeight = '100%';
+      }
+      if (!html.style.backgroundColor) {
+        html.style.backgroundColor = 'transparent';
+      }
     }
 
-    const body = document.body;
     if (body) {
-      body.style.backgroundColor = 'transparent';
-      body.style.margin = '0';
+      if (!body.style.margin) {
+        body.style.margin = '0';
+      }
       body.style.width = '100%';
       body.style.height = 'auto';
-      body.style.minHeight = '100%';
+      if (!body.style.minHeight || body.style.minHeight === '0') {
+        body.style.minHeight = '100%';
+      }
+      if (!body.style.backgroundColor) {
+        body.style.backgroundColor = 'transparent';
+      }
     }
   };
 
-  const attachMutationObserver = () => {
-    if (!window.MutationObserver) {
+  var ensureDomReady = function (callback) {
+    if (
+      document.readyState === 'interactive' ||
+      document.readyState === 'complete'
+    ) {
+      callback();
       return;
     }
 
-    const target = document.body || document.documentElement;
+    var handler = function () {
+      if (
+        document.readyState === 'interactive' ||
+        document.readyState === 'complete'
+      ) {
+        document.removeEventListener('readystatechange', handler);
+        window.removeEventListener('load', handler);
+        callback();
+      }
+    };
+
+    document.addEventListener('readystatechange', handler);
+    window.addEventListener('load', handler);
+  };
+
+  var observeMutations = function () {
+    if (typeof window.MutationObserver !== 'function') {
+      return;
+    }
+
+    var mutationObserver = new MutationObserver(function (mutations) {
+      requestDebouncedMeasure();
+
+      for (var index = 0; index < mutations.length; index += 1) {
+        var mutation = mutations[index];
+        if (!mutation || !mutation.addedNodes) {
+          continue;
+        }
+
+        for (var nodeIndex = 0; nodeIndex < mutation.addedNodes.length; nodeIndex += 1) {
+          var node = mutation.addedNodes[nodeIndex];
+          if (node && node.nodeType === 1) {
+            scanForMedia(node);
+          }
+        }
+      }
+    });
+
+    var target = document.documentElement || document.body;
     if (!target) {
-      requestAnimationFrame(attachMutationObserver);
       return;
     }
 
-    applyBaseStyles();
-
-    const mutationObserver = new MutationObserver(scheduleHeightUpdate);
     mutationObserver.observe(target, {
       attributes: true,
       childList: true,
@@ -181,35 +544,22 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       characterData: true,
     });
 
-    window.__AUTO_HEIGHT_MUTATION_OBSERVER__ = mutationObserver;
+    addCleanup(function () {
+      mutationObserver.disconnect();
+    });
   };
 
-  const attachResizeObserver = () => {
-    if (!window.ResizeObserver) {
+  var observeResize = function () {
+    if (typeof window.ResizeObserver !== 'function') {
       return;
     }
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      let observedHeight = 0;
-
-      if (entries && entries.length) {
-        for (let index = 0; index < entries.length; index += 1) {
-          observedHeight = Math.max(
-            observedHeight,
-            Math.ceil(readObserverBlockSize(entries[index])),
-          );
-        }
-      }
-
-      if (observedHeight) {
-        postHeight(observedHeight);
-      }
-
-      scheduleHeightUpdate();
+    var resizeObserver = new ResizeObserver(function () {
+      requestDebouncedMeasure();
     });
 
-    const html = document.documentElement;
-    const body = document.body;
+    var html = document.documentElement;
+    var body = document.body;
 
     if (html) {
       resizeObserver.observe(html);
@@ -219,75 +569,97 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       resizeObserver.observe(body);
     }
 
-    window.__AUTO_HEIGHT_RESIZE_OBSERVER__ = resizeObserver;
+    addCleanup(function () {
+      resizeObserver.disconnect();
+    });
   };
 
-  const attachVisualViewport = () => {
-    const viewport = window.visualViewport;
+  var observeViewport = function () {
+    var viewport = window.visualViewport;
     if (!viewport) {
       return;
     }
 
-    const handler = () => scheduleHeightUpdate();
-    viewport.addEventListener('resize', handler);
-    viewport.addEventListener('scroll', handler);
-    window.__AUTO_HEIGHT_VISUAL_VIEWPORT_HANDLER__ = handler;
+    var handler = function () {
+      requestDebouncedMeasure();
+    };
+
+    addEvent(viewport, 'resize', handler);
+    addEvent(viewport, 'scroll', handler);
   };
 
-  const attachIframeLoadListeners = () => {
-    const iframes = document.querySelectorAll('iframe');
-    if (!iframes.length) {
+  var observeFonts = function () {
+    var fonts = document.fonts;
+    if (!fonts) {
       return;
     }
 
-    const handler = () => scheduleHeightUpdate();
-    for (let index = 0; index < iframes.length; index += 1) {
-      iframes[index].addEventListener('load', handler);
+    var handler = function () {
+      scheduleMeasure(true);
+    };
+
+    if (typeof fonts.addEventListener === 'function') {
+      addEvent(fonts, 'loadingdone', handler);
+      addEvent(fonts, 'loadingerror', handler);
+    }
+
+    if (fonts.ready && typeof fonts.ready.then === 'function') {
+      fonts.ready.then(handler).catch(handler);
     }
   };
 
-  const attachGlobalListeners = () => {
-    const events = [
-      'load',
-      'pageshow',
-      'orientationchange',
-      'resize',
-      'DOMContentLoaded',
-    ];
+  var observeGlobalEvents = function () {
+    var handler = function () {
+      scheduleMeasure(true);
+    };
 
-    for (let index = 0; index < events.length; index += 1) {
-      window.addEventListener(events[index], scheduleHeightUpdate);
+    var events = ['load', 'pageshow', 'orientationchange', 'resize'];
+    for (var index = 0; index < events.length; index += 1) {
+      addEvent(window, events[index], handler);
     }
 
-    document.addEventListener('readystatechange', scheduleHeightUpdate);
+    addEvent(document, 'DOMContentLoaded', handler);
+    addEvent(document, 'readystatechange', handler);
   };
 
-  const bootstrap = () => {
+  var watchMessages = function () {
+    addEvent(window, 'message', function (event) {
+      if (!event || !event.data) {
+        return;
+      }
+
+      if (event.data === MESSAGE_KEY) {
+        scheduleMeasure(true);
+      }
+    });
+  };
+
+  var queueStabilization = function () {
+    var delays = [32, 120, 240, 500, 1000, 2000, 3200];
+    for (var index = 0; index < delays.length; index += 1) {
+      (function (delay) {
+        scheduleTimeout(function () {
+          scheduleMeasure(true);
+        }, delay);
+      })(delays[index]);
+    }
+  };
+
+  var bootstrap = function () {
     applyBaseStyles();
-    attachMutationObserver();
-    attachResizeObserver();
-    attachVisualViewport();
-    attachFontLoadListeners();
-    attachImageLoadListeners();
-    attachIframeLoadListeners();
-    attachGlobalListeners();
-    scheduleHeightUpdate();
+    scanForMedia(document);
+    observeMutations();
+    observeResize();
+    observeViewport();
+    observeFonts();
+    observeGlobalEvents();
+    watchMessages();
+    queueStabilization();
+    addEvent(window, 'unload', cleanupAll);
 
-    const timeouts = [16, 60, 180, 500, 1000, 2000, 3000, 5000];
-    for (let index = 0; index < timeouts.length; index += 1) {
-      setTimeout(scheduleHeightUpdate, timeouts[index]);
-    }
+    scheduleMeasure(true);
+    scheduleFallback();
   };
 
-  window.addEventListener('message', (event) => {
-    if (!event || !event.data) {
-      return;
-    }
-
-    if (event.data === messageKey) {
-      scheduleHeightUpdate();
-    }
-  });
-
-  bootstrap();
+  ensureDomReady(bootstrap);
 })();`;
