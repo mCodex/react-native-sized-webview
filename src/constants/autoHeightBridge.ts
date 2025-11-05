@@ -47,26 +47,24 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return 0;
   };
 
-  const getMaxHeight = (element) => {
-    if (!element) {
-      return 0;
-    }
-    return Math.max(
-      element.scrollHeight || 0,
-      element.offsetHeight || 0,
-      element.clientHeight || 0
-    );
-  };
-
   const measureDocumentHeight = () => {
-    const scrollingElement = document.scrollingElement;
-    const body = document.body;
     const html = document.documentElement;
+    const body = document.body;
+
+    // Ensure body has proper styling for measurement
+    if (body) {
+      body.style.height = 'auto';
+      body.style.minHeight = '100%';
+    }
+
+    // Force layout recalculation
+    const forceLayout = html.offsetHeight;
 
     return Math.max(
-      getMaxHeight(scrollingElement),
-      getMaxHeight(body),
-      getMaxHeight(html)
+      html.scrollHeight,
+      html.offsetHeight,
+      body ? body.scrollHeight : 0,
+      body ? body.offsetHeight : 0
     );
   };
 
@@ -132,12 +130,16 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     if (html) {
       html.style.overflow = 'hidden';
       html.style.backgroundColor = 'transparent';
+      html.style.height = 'auto';
     }
 
     const body = document.body;
     if (body) {
       body.style.backgroundColor = 'transparent';
       body.style.margin = '0';
+      body.style.width = '100%';
+      body.style.height = 'auto';
+      body.style.minHeight = '100%';
     }
   };
 
@@ -252,7 +254,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     attachGlobalListeners();
     scheduleHeightUpdate();
 
-    const timeouts = [16, 60, 180, 500, 1000, 2000];
+    const timeouts = [16, 60, 180, 500, 1000, 2000, 3000, 5000];
     for (let index = 0; index < timeouts.length; index += 1) {
       setTimeout(scheduleHeightUpdate, timeouts[index]);
     }
