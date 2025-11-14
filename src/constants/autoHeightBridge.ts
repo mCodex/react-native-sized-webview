@@ -57,7 +57,6 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     microtask: false,
     pendingLoads: 0,
     lastHeight: 0,
-    lastCssHeight: 0,
     anomalyCount: 0,
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
@@ -173,13 +172,62 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     return id;
   };
 
+  var RENDERABLE_MEDIA_TAGS = {
+    IMG: true,
+    IFRAME: true,
+    VIDEO: true,
+    SVG: true,
+    CANVAS: true,
+    PICTURE: true,
+    OBJECT: true,
+    EMBED: true,
+    AUDIO: true,
+  };
+
+  var hasRenderableContent = function (node) {
+    if (!node || !node.childNodes || !node.childNodes.length) {
+      return false;
+    }
+
+    var child = node.firstChild;
+    while (child) {
+      if (child.nodeType === 3) {
+        if (child.textContent && child.textContent.trim()) {
+          return true;
+        }
+      } else if (child.nodeType === 1) {
+        var tag = (child.tagName || '').toUpperCase();
+        if (tag === 'BR') {
+          child = child.nextSibling;
+          continue;
+        }
+
+        if (RENDERABLE_MEDIA_TAGS[tag]) {
+          return true;
+        }
+
+        if (hasRenderableContent(child)) {
+          return true;
+        }
+      }
+
+      child = child.nextSibling;
+    }
+
+    return false;
+  };
+
   var pruneTrailingNodes = function (container) {
     if (!container) {
       return;
     }
 
     var isWhitespaceText = function (node) {
-      return node && node.nodeType === 3 && (!node.textContent || !node.textContent.trim());
+      return (
+        node &&
+        node.nodeType === 3 &&
+        (!node.textContent || !node.textContent.trim())
+      );
     };
 
     var isTrimmableElement = function (node) {
@@ -193,7 +241,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       }
 
       if (tag === 'P') {
-        return !node.textContent || !node.textContent.trim();
+        return !hasRenderableContent(node);
       }
 
       return false;
@@ -231,74 +279,76 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     }
   };
 
-  var readRectHeight = function (element) {
-    if (!element || typeof element.getBoundingClientRect !== 'function') {
+  var readElementHeight = function (element) {
+    if (!element) {
       return 0;
     }
 
-    var rect = element.getBoundingClientRect();
-    return typeof rect.height === 'number' ? rect.height : 0;
-  };
-
-  var readMaxValue = function (values) {
-    var max = 0;
-
-    for (var index = 0; index < values.length; index += 1) {
-      var value = values[index];
-      if (typeof value === 'number' && value > max) {
-        max = value;
-      }
+    var rectHeight = 0;
+    if (typeof element.getBoundingClientRect === 'function') {
+      var rect = element.getBoundingClientRect();
+      rectHeight = rect && typeof rect.height === 'number' ? rect.height : 0;
     }
 
-    return max;
+    return Math.max(
+      0,
+      rectHeight,
+      element.scrollHeight || 0,
+      element.offsetHeight || 0,
+      element.clientHeight || 0
+    );
   };
 
   var measureHeight = function () {
     var html = document.documentElement;
     var body = document.body;
     var wrapper = ensureWrapper();
+    var scrollingElement = document.scrollingElement;
 
     pruneTrailingNodes(wrapper);
 
-    var values = [];
-
-    var collect = function (element) {
-      if (!element) {
-        return;
-      }
-
-      values.push(
-        readRectHeight(element),
-        element.scrollHeight || 0,
-        element.offsetHeight || 0,
-        element.clientHeight || 0
-      );
-    };
+    var targets = [];
 
     if (wrapper) {
-      collect(wrapper);
-    } else {
-      if (body) {
-        collect(body);
-      }
-      if (html && html !== body) {
-        collect(html);
-      }
+      targets.push(wrapper);
     }
 
-    if (!values.length) {
+    if (body && targets.indexOf(body) === -1) {
+      targets.push(body);
+    }
+
+    if (html && targets.indexOf(html) === -1) {
+      targets.push(html);
+    }
+
+    if (
+      scrollingElement &&
+      scrollingElement !== body &&
+      scrollingElement !== html &&
+      targets.indexOf(scrollingElement) === -1
+    ) {
+      targets.push(scrollingElement);
+    }
+
+    if (!targets.length) {
       return 0;
     }
 
-    return Math.max(0, Math.ceil(readMaxValue(values)));
+    var maxHeight = 0;
+    for (var index = 0; index < targets.length; index += 1) {
+      var value = readElementHeight(targets[index]);
+      if (value > maxHeight) {
+        maxHeight = value;
+      }
+    }
+
+    return Math.max(0, Math.ceil(maxHeight));
   };
 
   var postHeight = function (height) {
     if (!height || height <= 0) {
       return;
     }
-
-    state.lastCssHeight = height;
 
     var sanitized = Math.ceil(height);
 
