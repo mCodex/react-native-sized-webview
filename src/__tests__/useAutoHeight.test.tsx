@@ -150,6 +150,23 @@ describe('useAutoHeight', () => {
     expect(requestAnimationFrameMock).not.toHaveBeenCalled();
     expect(latest.height).toBe(initialHeight);
 
+    // Prefixed but non-numeric payload also passes the prefix gate and must
+    // still be rejected by the numeric validator (covers the isFinite branch).
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:not-a-number');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBe(initialHeight);
+
+    // Direct negative number payload exercises the numericValue <= 0 branch.
+    act(() => {
+      latest.setHeightFromPayload(-10);
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBe(initialHeight);
+
     act(() => {
       latest.setHeightFromPayload(initialHeight + 1);
     });
