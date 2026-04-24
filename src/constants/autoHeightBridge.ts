@@ -70,6 +70,11 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     cleanup: [],
     wrapper: null,
     mediaObserver: null,
+    // Dirty flag: set to true whenever the DOM mutates so that the next
+    // measure runs pruneTrailingNodes. Cleared after each prune pass. This
+    // skips the recursive hasRenderableContent DFS on every rAF tick during
+    // resize / font-load storms when no structural mutation has happened.
+    domDirty: true,
   };
 
   window[GLOBAL_KEY] = state;
@@ -267,6 +272,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       break;
     }
 
+    // Mark the subtree as clean until the next MutationObserver callback.
+    state.domDirty = false;
+
     if (removed) {
       scheduleMeasure(true);
     }
@@ -310,31 +318,28 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var html = document.documentElement;
     var body = document.body;
     var wrapper = ensureWrapper();
-    var scrollingElement = document.scrollingElement;
 
-    pruneTrailingNodes(wrapper);
+    // Only walk the trailing-node DFS when something actually mutated since
+    // the last pass. Resize / font / viewport ticks don't change structure.
+    if (state.domDirty) {
+      pruneTrailingNodes(wrapper);
+    }
 
+    // Fast path: when the wrapper exists (it wraps every body child) its
+    // layout box is authoritative, so a single reflow via one element is
+    // enough. Reading multiple elements forces a reflow per read. Only fall
+    // back to html/body when the wrapper is unavailable.
     var targets = [];
 
     if (wrapper) {
       targets.push(wrapper);
-    }
-
-    if (body && targets.indexOf(body) === -1) {
-      targets.push(body);
-    }
-
-    if (html && targets.indexOf(html) === -1) {
-      targets.push(html);
-    }
-
-    if (
-      scrollingElement &&
-      scrollingElement !== body &&
-      scrollingElement !== html &&
-      targets.indexOf(scrollingElement) === -1
-    ) {
-      targets.push(scrollingElement);
+    } else {
+      if (body) {
+        targets.push(body);
+      }
+      if (html && html !== body) {
+        targets.push(html);
+      }
     }
 
     if (!targets.length) {
@@ -773,6 +778,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     }
 
     var mutationObserver = new MutationObserver(function (mutations) {
+      state.domDirty = true;
       requestDebouncedMeasure();
 
       if (!state.wrapper || !document.contains(state.wrapper)) {

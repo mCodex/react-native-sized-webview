@@ -40,10 +40,12 @@ export interface UseAutoHeightResult {
   /**
    * Handler for raw `onMessage` payloads from `react-native-webview`.
    *
-   * Accepts either the namespaced string the bridge emits
-   * (`"__RN_SIZED_WV__:<number>"`) or a bare numeric value (kept for backward
-   * compatibility with tests and custom integrations). Invalid, out-of-range,
-   * or sub-threshold values are silently ignored.
+   * Accepts only the namespaced string the bridge emits
+   * (`"__RN_SIZED_WV__:<number>"`) or a raw `number` (useful for direct /
+   * programmatic calls from tests and custom integrations). Bare numeric
+   * strings, invalid values, and out-of-range values are silently ignored —
+   * this is what prevents user-land `postMessage('123')` from mutating the
+   * container height.
    */
   setHeightFromPayload: (rawValue: unknown) => void;
 }
@@ -53,17 +55,28 @@ const HEIGHT_DIFF_THRESHOLD = 1;
 
 /**
  * Parses a raw payload into a positive finite pixel count, or `null` if the
- * value is unusable. Accepts the namespaced protocol string, plain numbers,
- * and numeric strings.
+ * value is unusable.
+ *
+ * Accepts:
+ * - `number` values (direct/programmatic calls — never reach the WebView).
+ * - Strings starting with {@link BRIDGE_MESSAGE_PREFIX} (bridge traffic).
+ *
+ * Bare numeric strings (e.g. `'360'`) are rejected: only the namespaced
+ * bridge protocol is trusted, so user-land `postMessage('123')` cannot mutate
+ * the container height.
  */
 const parseHeightPayload = (rawValue: unknown): number | null => {
-  let candidate: unknown = rawValue;
+  let candidate: unknown;
 
-  if (
-    typeof candidate === 'string' &&
-    candidate.startsWith(BRIDGE_MESSAGE_PREFIX)
+  if (typeof rawValue === 'number') {
+    candidate = rawValue;
+  } else if (
+    typeof rawValue === 'string' &&
+    rawValue.startsWith(BRIDGE_MESSAGE_PREFIX)
   ) {
-    candidate = candidate.slice(BRIDGE_MESSAGE_PREFIX.length);
+    candidate = rawValue.slice(BRIDGE_MESSAGE_PREFIX.length);
+  } else {
+    return null;
   }
 
   const numericValue =

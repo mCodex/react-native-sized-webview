@@ -8,6 +8,7 @@ import {
 } from 'react-native-webview';
 
 import { AUTO_HEIGHT_BRIDGE } from '../constants/autoHeightBridge';
+import { BRIDGE_MESSAGE_PREFIX } from '../constants/bridgeProtocol';
 import { useAutoHeight } from '../hooks/useAutoHeight';
 import { composeInjectedScript } from '../utils/composeInjectedScript';
 
@@ -90,8 +91,16 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      if (isJsEnabled) {
-        setHeightFromPayload(event.nativeEvent.data);
+      // Only bridge-prefixed strings can mutate the container height. Any
+      // other payload (user-land `postMessage('hello')`, numeric strings from
+      // the page, etc.) is forwarded untouched to the consumer's `onMessage`.
+      const data = event.nativeEvent.data;
+      if (
+        isJsEnabled &&
+        typeof data === 'string' &&
+        data.startsWith(BRIDGE_MESSAGE_PREFIX)
+      ) {
+        setHeightFromPayload(data);
       }
       onMessage?.(event);
     },

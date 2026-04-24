@@ -142,6 +142,21 @@ The example showcases:
 | Scrolling in parent `ScrollView` | Nested scroll can fight gestures | Parent retains full momentum and gesture priority |
 
 Benchmarks were captured on CMS articles up to 3k words in a 60 fps RN dev build. The bridge batches DOM mutations so even long documents resize without thrashing the JS thread.
+
+### 🏎️ Built for speed
+
+Every hot path is designed to run at its theoretical complexity floor — no allocations in steady state, no repeated DOM walks, and at most one forced layout per measurement frame.
+
+| Hot path | Complexity | Notes |
+| --- | --- | --- |
+| Message parsing (`useAutoHeight`) | **O(1)** | Namespaced-prefix check, single `Number()` coerce, constant-bound clamp. |
+| Height commit (rAF-batched) | **O(1)** amortized per frame | Sub-pixel diffs are dropped; at most one React render per animation frame. |
+| DOM mutation callback | **O(added nodes)** | Scans only each mutation's `addedNodes`, not the whole tree. Media elements are deduped via a `WeakSet`. |
+| `measureHeight` | **1 forced reflow / call** | Reads the wrapper element only — its box is authoritative because every `<body>` child lives inside it. |
+| Trailing-node prune DFS | Runs only when the DOM is **dirty** | A mutation-driven dirty flag skips the recursive walk on resize / font / viewport ticks when nothing structural changed. |
+
+The net effect: resize storms, font loads, and viewport changes cost a single `getBoundingClientRect()` per frame — nothing more. Paired with `sideEffects: false` and named-only exports, the library stays fast *and* small in the final bundle.
+
 ### 📦 Bundle & tree-shaking
 
 - Ships as ESM-first (`lib/module/**`) with `"sideEffects": false`.

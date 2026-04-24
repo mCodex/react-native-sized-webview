@@ -73,7 +73,7 @@ describe('useAutoHeight', () => {
     expect(latest.height).toBe(120);
 
     act(() => {
-      latest.setHeightFromPayload('240');
+      latest.setHeightFromPayload('__RN_SIZED_WV__:240');
     });
 
     expect(requestAnimationFrameMock).toHaveBeenCalledTimes(1);
@@ -118,6 +118,21 @@ describe('useAutoHeight', () => {
 
     expect(requestAnimationFrameMock).not.toHaveBeenCalled();
     expect(latest.height).toBeUndefined();
+    unmount();
+  });
+
+  it('rejects bare numeric strings without the bridge prefix', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    act(() => {
+      latest.setHeightFromPayload('400');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBeUndefined();
+    expect(onHeightChange).not.toHaveBeenCalled();
     unmount();
   });
 
