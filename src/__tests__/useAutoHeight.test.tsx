@@ -1,4 +1,4 @@
-import { render, act } from '@testing-library/react-native';
+import { act, render } from '@testing-library/react-native';
 
 import { useAutoHeight } from '../hooks/useAutoHeight';
 
@@ -36,7 +36,9 @@ const flushRaf = () => {
     typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
-  callbacks.forEach((callback) => callback && callback(now));
+  callbacks.forEach((callback) => {
+    callback?.(now);
+  });
 };
 
 describe('useAutoHeight', () => {
@@ -71,7 +73,7 @@ describe('useAutoHeight', () => {
     expect(latest.height).toBe(120);
 
     act(() => {
-      latest.setHeightFromPayload('240');
+      latest.setHeightFromPayload('__RN_SIZED_WV__:240');
     });
 
     expect(requestAnimationFrameMock).toHaveBeenCalledTimes(1);
@@ -85,15 +87,81 @@ describe('useAutoHeight', () => {
     unmount();
   });
 
+  it('returns undefined height until the first valid payload when minHeight is 0', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    expect(latest.height).toBeUndefined();
+
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:312');
+    });
+
+    act(() => {
+      flushRaf();
+    });
+
+    expect(latest.height).toBe(312);
+    expect(onHeightChange).toHaveBeenLastCalledWith(312);
+    unmount();
+  });
+
+  it('rejects payloads above the MAX_COMMITTED_HEIGHT safety cap', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:9999999');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBeUndefined();
+    unmount();
+  });
+
+  it('rejects bare numeric strings without the bridge prefix', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    act(() => {
+      latest.setHeightFromPayload('400');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBeUndefined();
+    expect(onHeightChange).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it('ignores invalid or insignificant height updates', () => {
     const { unmount } = render(
       <Harness minHeight={64} onHeightChange={onHeightChange} />
     );
 
-    const initialHeight = latest.height;
+    const initialHeight = latest.height as number;
 
     act(() => {
       latest.setHeightFromPayload('not-a-number');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBe(initialHeight);
+
+    // Prefixed but non-numeric payload also passes the prefix gate and must
+    // still be rejected by the numeric validator (covers the isFinite branch).
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:not-a-number');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBe(initialHeight);
+
+    // Direct negative number payload exercises the numericValue <= 0 branch.
+    act(() => {
+      latest.setHeightFromPayload(-10);
     });
 
     expect(requestAnimationFrameMock).not.toHaveBeenCalled();

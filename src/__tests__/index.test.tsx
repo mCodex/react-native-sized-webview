@@ -1,4 +1,4 @@
-import { render, act } from '@testing-library/react-native';
+import { act, render } from '@testing-library/react-native';
 import { View } from 'react-native';
 
 import { SizedWebView } from '../components/SizedWebView';
@@ -75,7 +75,7 @@ describe('SizedWebView', () => {
       { backgroundColor: 'transparent' },
       { opacity: 0.5 },
     ]);
-    expect(props.originWhitelist).toEqual(['*']);
+    expect(props.originWhitelist).toEqual(['http://*', 'https://*']);
     expect(props.scrollEnabled).toBe(false);
     expect(props.showsVerticalScrollIndicator).toBe(false);
     expect(props.javaScriptEnabled).toBe(true);
@@ -105,13 +105,13 @@ describe('SizedWebView', () => {
     );
 
     const webViewProps = capturedWebViewProps.at(-1) ?? {};
-    const event = { nativeEvent: { data: '360' } } as any;
+    const event = { nativeEvent: { data: '__RN_SIZED_WV__:360' } } as any;
 
     act(() => {
       (webViewProps.onMessage as (evt: unknown) => void)?.(event);
     });
 
-    expect(__setHeightFromPayload).toHaveBeenCalledWith('360');
+    expect(__setHeightFromPayload).toHaveBeenCalledWith('__RN_SIZED_WV__:360');
     expect(onMessage).toHaveBeenCalledWith(event);
 
     act(() => {
@@ -132,11 +132,11 @@ describe('SizedWebView', () => {
 
     act(() => {
       (webViewProps.onMessage as (evt: unknown) => void)?.({
-        nativeEvent: { data: '480' },
+        nativeEvent: { data: '__RN_SIZED_WV__:480' },
       });
     });
 
-    expect(__setHeightFromPayload).toHaveBeenCalledWith('480');
+    expect(__setHeightFromPayload).toHaveBeenCalledWith('__RN_SIZED_WV__:480');
 
     act(() => {
       renderResult.unmount();
@@ -196,6 +196,95 @@ describe('SizedWebView', () => {
 
     const props = capturedWebViewProps.at(-1) ?? {};
     expect(props.automaticallyAdjustContentInsets).toBe(false);
+
+    act(() => {
+      renderResult.unmount();
+    });
+  });
+
+  it('does not force a height on the container when the hook returns undefined', () => {
+    const { useAutoHeight, __setHeightFromPayload } = jest.requireMock(
+      '../hooks/useAutoHeight'
+    );
+    (useAutoHeight as jest.Mock).mockReturnValue({
+      height: undefined,
+      setHeightFromPayload: __setHeightFromPayload,
+    });
+
+    const renderResult = render(
+      <SizedWebView
+        source={{ html: '<p>Hi</p>' }}
+        containerStyle={{ backgroundColor: 'blue' }}
+      />
+    );
+
+    const container = renderResult.UNSAFE_getByType(View);
+    expect(container.props.style).toEqual({ backgroundColor: 'blue' });
+
+    act(() => {
+      renderResult.unmount();
+    });
+  });
+
+  it('skips the height bridge and the hook dispatch when javaScriptEnabled is false', () => {
+    const { __setHeightFromPayload } = jest.requireMock(
+      '../hooks/useAutoHeight'
+    );
+
+    const renderResult = render(
+      <SizedWebView
+        source={{ html: '<p>Static</p>' }}
+        javaScriptEnabled={false}
+        injectedJavaScriptBeforeContentLoaded="console.log('before');"
+      />
+    );
+
+    const props = capturedWebViewProps.at(-1) ?? {};
+
+    expect(props.javaScriptEnabled).toBe(false);
+    // Bridge must not be injected when the caller disabled JS.
+    expect(props.injectedJavaScriptBeforeContentLoaded).toBe(
+      composeInjectedScript("console.log('before');")
+    );
+    expect(String(props.injectedJavaScriptBeforeContentLoaded)).not.toContain(
+      '__RN_SIZED_WEBVIEW__'
+    );
+
+    act(() => {
+      (props.onMessage as (evt: unknown) => void)?.({
+        nativeEvent: { data: '__RN_SIZED_WV__:400' },
+      });
+    });
+    expect(__setHeightFromPayload).not.toHaveBeenCalled();
+
+    act(() => {
+      renderResult.unmount();
+    });
+  });
+
+  it('does not forward unprefixed user-land messages to the auto-height hook', () => {
+    const { __setHeightFromPayload } = jest.requireMock(
+      '../hooks/useAutoHeight'
+    );
+    const onMessage = jest.fn();
+
+    const renderResult = render(
+      <SizedWebView source={{ html: '<p>Hi</p>' }} onMessage={onMessage} />
+    );
+
+    const webViewProps = capturedWebViewProps.at(-1) ?? {};
+    const userLandEvent = {
+      nativeEvent: { data: '400' },
+    } as any;
+
+    act(() => {
+      (webViewProps.onMessage as (evt: unknown) => void)?.(userLandEvent);
+    });
+
+    // Bare numeric string is user-land traffic: must NOT reach the hook,
+    // but MUST still be forwarded to the consumer's onMessage.
+    expect(__setHeightFromPayload).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledWith(userLandEvent);
 
     act(() => {
       renderResult.unmount();

@@ -15,37 +15,25 @@
  * />
  * ```
  *
- * ## Main Exports
+ * ## Named exports only
  *
- * ### Components
- * - **`SizedWebView`** - The main auto-sizing WebView component
- *
- * ### Hooks
- * - **`useAutoHeight`** - Hook for managing WebView height state (advanced usage)
- *
- * ### Utilities
- * - **`composeInjectedScript`** - Merges multiple JavaScript snippets for injection
- * - **`AUTO_HEIGHT_BRIDGE`** - The JavaScript bridge code (usually not needed directly)
- *
- * ### Types
- * - **`SizedWebViewProps`** - Props interface for SizedWebView component
- * - **`UseAutoHeightOptions`** - Configuration for useAutoHeight hook
- * - **`UseAutoHeightResult`** - Return value from useAutoHeight hook
+ * This package intentionally exposes **only named exports** — no default. This
+ * keeps tree-shaking friendly across bundlers and avoids the common pitfall of
+ * mixing `import X from ...` with named imports.
  *
  * @packageDocumentation
  */
 
-export { SizedWebView } from './components/SizedWebView';
 export type { SizedWebViewProps } from './components/SizedWebView';
-
-export { useAutoHeight } from './hooks/useAutoHeight';
+export { SizedWebView } from './components/SizedWebView';
+export { AUTO_HEIGHT_BRIDGE } from './constants/autoHeightBridge';
+export {
+  BRIDGE_MESSAGE_PREFIX,
+  MAX_COMMITTED_HEIGHT,
+} from './constants/bridgeProtocol';
 export type {
   UseAutoHeightOptions,
   UseAutoHeightResult,
 } from './hooks/useAutoHeight';
-
-export { AUTO_HEIGHT_BRIDGE } from './constants/autoHeightBridge';
+export { useAutoHeight } from './hooks/useAutoHeight';
 export { composeInjectedScript } from './utils/composeInjectedScript';
-
-// Default export for convenience
-export { SizedWebView as default } from './components/SizedWebView';

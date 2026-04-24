@@ -1,17 +1,24 @@
 /**
  * JavaScript bridge injected into the WebView to compute and post its content height.
- * The script is designed to be idempotent and resilient to repeated injections.
+ *
+ * The script is idempotent (safe to inject multiple times), uses a namespaced
+ * `postMessage` protocol (`__RN_SIZED_WV__:<height>`) so user-land messages
+ * never collide with bridge traffic, and avoids clamping the host document's
+ * layout until a real height has been committed — a behavior required for
+ * correct rendering inside iOS 26 WKWebView.
  */
 export const AUTO_HEIGHT_BRIDGE = `(() => {
   var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
   var WRAPPER_ID = '__RN_SIZED_WEBVIEW_WRAPPER__';
   var TRACKED_FLAG = '__RN_SIZED_WEBVIEW_MEDIA__';
   var MESSAGE_KEY = '__AUTO_HEIGHT__';
+  var MESSAGE_PREFIX = '__RN_SIZED_WV__:';
   var ACTIVE_DEBOUNCE_MS = 48;
   var IDLE_DEBOUNCE_MS = 160;
   var INITIAL_FALLBACK_MS = 600;
   var MAX_FALLBACK_MS = 4000;
   var MAX_REASONABLE_HEIGHT = 120000;
+  var WARMUP_MIN_HEIGHT = 2;
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return;
@@ -63,6 +70,11 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     cleanup: [],
     wrapper: null,
     mediaObserver: null,
+    // Dirty flag: set to true whenever the DOM mutates so that the next
+    // measure runs pruneTrailingNodes. Cleared after each prune pass. This
+    // skips the recursive hasRenderableContent DFS on every rAF tick during
+    // resize / font-load storms when no structural mutation has happened.
+    domDirty: true,
   };
 
   window[GLOBAL_KEY] = state;
@@ -260,6 +272,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       break;
     }
 
+    // Mark the subtree as clean until the next MutationObserver callback.
+    state.domDirty = false;
+
     if (removed) {
       scheduleMeasure(true);
     }
@@ -303,31 +318,28 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var html = document.documentElement;
     var body = document.body;
     var wrapper = ensureWrapper();
-    var scrollingElement = document.scrollingElement;
 
-    pruneTrailingNodes(wrapper);
+    // Only walk the trailing-node DFS when something actually mutated since
+    // the last pass. Resize / font / viewport ticks don't change structure.
+    if (state.domDirty) {
+      pruneTrailingNodes(wrapper);
+    }
 
+    // Fast path: when the wrapper exists (it wraps every body child) its
+    // layout box is authoritative, so a single reflow via one element is
+    // enough. Reading multiple elements forces a reflow per read. Only fall
+    // back to html/body when the wrapper is unavailable.
     var targets = [];
 
     if (wrapper) {
       targets.push(wrapper);
-    }
-
-    if (body && targets.indexOf(body) === -1) {
-      targets.push(body);
-    }
-
-    if (html && targets.indexOf(html) === -1) {
-      targets.push(html);
-    }
-
-    if (
-      scrollingElement &&
-      scrollingElement !== body &&
-      scrollingElement !== html &&
-      targets.indexOf(scrollingElement) === -1
-    ) {
-      targets.push(scrollingElement);
+    } else {
+      if (body) {
+        targets.push(body);
+      }
+      if (html && html !== body) {
+        targets.push(html);
+      }
     }
 
     if (!targets.length) {
@@ -353,6 +365,14 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var sanitized = Math.ceil(height);
 
     if (!isFinite(sanitized) || sanitized <= 0) {
+      return;
+    }
+
+    // Warm-up guard: on iOS 26 WKWebView the very first measurements can
+    // collapse to 1px if the host container starts tiny. Skip those and let
+    // the fallback timer re-measure; the real height is reported shortly.
+    if (sanitized < WARMUP_MIN_HEIGHT && state.lastHeight === 0) {
+      scheduleFallback();
       return;
     }
 
@@ -382,7 +402,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     try {
       var channel = window.ReactNativeWebView;
       if (channel && typeof channel.postMessage === 'function') {
-        channel.postMessage(String(sanitized));
+        channel.postMessage(MESSAGE_PREFIX + String(sanitized));
       }
     } catch (error) {
       // no-op
@@ -656,10 +676,13 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var html = document.documentElement;
     var body = document.body;
 
+    // Intentionally do NOT set html.style.overflow = 'hidden' here. iOS 26
+    // WKWebView clamps scrollHeight/offsetHeight to the native container's
+    // height when the host document has overflow:hidden and the container
+    // starts tiny, creating a feedback loop that locks the layout at 1px.
+    // Scrolling is already suppressed via scrollEnabled={false} on the RN
+    // side, so we rely on that and keep the document layout untouched.
     if (html) {
-      if (!html.style.overflow) {
-        html.style.overflow = 'hidden';
-      }
       if (!html.style.height) {
         html.style.height = 'auto';
       }
@@ -755,6 +778,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     }
 
     var mutationObserver = new MutationObserver(function (mutations) {
+      state.domDirty = true;
       requestDebouncedMeasure();
 
       if (!state.wrapper || !document.contains(state.wrapper)) {
@@ -897,7 +921,9 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   };
 
   var queueStabilization = function () {
-    var delays = [32, 120, 240, 500, 1000, 2000, 3200];
+    // Mutation/resize/font observers cover the fine-grained case already —
+    // these three probes just backstop layout settling on slower devices.
+    var delays = [120, 500, 2000];
     for (var index = 0; index < delays.length; index += 1) {
       (function (delay) {
         scheduleTimeout(function () {
