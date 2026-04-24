@@ -12,6 +12,24 @@ React Native WebView that auto-sizes to match its HTML content—whether you loa
 > [!TIP]
 > 💡 Works out-of-the-box with dynamic CMS pages, FAQs, marketing landers, local HTML snippets, or full external sites.
 
+## 🚨 Upgrading to 1.1.0
+
+Three defaults changed in the 1.1.x line. Each is a one-line migration:
+
+- **Named import only.** The default export was removed to keep tree-shaking predictable across bundlers.
+  ```diff
+  - import SizedWebView from 'react-native-sized-webview';
+  + import { SizedWebView } from 'react-native-sized-webview';
+  ```
+- **`originWhitelist` now defaults to `['http://*', 'https://*']`.** Standard HTTP(S) navigation keeps working; non-web schemes (`file:`, `javascript:`, `data:`, `intent:`) are blocked by default. Tighten it for production if you only load a specific origin:
+  ```diff
+    <SizedWebView
+  +   originWhitelist={['https://your-trusted-domain.com']}
+      source={{ uri: 'https://your-trusted-domain.com/page' }}
+    />
+  ```
+- **`javaScriptEnabled` is now respected.** Passing `false` disables auto-sizing; the container falls back to `minHeight` (or `containerStyle.height`). This unblocks rendering static HTML on iOS 26 ([#3](https://github.com/mCodex/react-native-sized-webview/issues/3)).
+
 ## ✨ Highlights
 
 - 📐 Wrapper-based measurement keeps the WebView content in a dedicated container, so height always reflects the real DOM footprint.
@@ -80,13 +98,24 @@ The example showcases:
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `minHeight` | `number` | `0` | Minimum height (dp) applied to the container to avoid layout jumps before content loads. |
-| `containerStyle` | `StyleProp<ViewStyle>` | — | Styles applied to the wrapping `View`. Use it for padding, borders, or shadows. |
-| `onHeightChange` | `(height: number) => void` | — | Callback fired whenever a new height is committed. Great for analytics or debugging. |
-| `...WebViewProps` | — | — | All remaining props are forwarded to the underlying `react-native-webview`. |
+| `minHeight` | `number` | `0` | Minimum height (dp) applied to the container. When `0`, the container is unsized until the first measurement arrives (avoids layout flicker and the iOS 26 WKWebView 1px feedback loop). |
+| `containerStyle` | `StyleProp<ViewStyle>` | — | Styles applied to the wrapping `View`. Use it for padding, borders, or shadows. Do not set `height` — it is managed by the hook. |
+| `onHeightChange` | `(height: number) => void` | — | Callback fired whenever a new height is committed. Great for analytics or debugging. Never fires for invalid or out-of-range values. |
+| `originWhitelist` | `string[]` | `['http://*', 'https://*']` | Origins the WebView is allowed to navigate to. Blocks non-web schemes (`file:`, `javascript:`, `data:`, `intent:`) by default. Tighten it to a specific origin list for stricter environments. |
+| `javaScriptEnabled` | `boolean` | `true` | When `false`, the auto-height bridge is **not** injected and the container falls back to `minHeight`. Use for static HTML that doesn't need JS. |
+| `...WebViewProps` | — | — | All remaining props are forwarded to the underlying `react-native-webview`. User-supplied values always win over the defaults above. |
 
 > [!NOTE]
 > 🧩 `scrollEnabled` defaults to `false` so sizing remains deterministic. Only enable it if the WebView should manage its own scroll.
+
+## 🛡️ Security
+
+- **Namespaced message protocol.** The injected bridge posts values prefixed with `__RN_SIZED_WV__:` and the hook rejects everything else, so your own `onMessage` traffic cannot accidentally (or maliciously) mutate the container height.
+- **Safe-by-default origin list.** `originWhitelist` defaults to `['http://*', 'https://*']` — HTTP(S) navigation works, but non-web schemes (`file:`, `javascript:`, `data:`, `intent:`) are blocked. Tighten to a specific origin for production apps that only load trusted content.
+- **Respected JS toggle.** `javaScriptEnabled={false}` is honored; the bridge is not injected when you disable scripts.
+- **Clamped heights.** A shared `MAX_COMMITTED_HEIGHT` (120 000 dp) caps both sides of the bridge to defend against runaway values from broken markup or third-party scripts.
+- **No native code.** This package ships only JavaScript/TypeScript — there is no Objective-C, Swift, Java, or Kotlin to audit.
+- **Warning.** Never interpolate untrusted strings into `injectedJavaScript` or `injectedJavaScriptBeforeContentLoaded`. Anything passed there runs inside the WebView page context and can reach React Native through `window.ReactNativeWebView`.
 
 ## 🧩 Edge Cases Covered
 
@@ -113,7 +142,11 @@ The example showcases:
 | Scrolling in parent `ScrollView` | Nested scroll can fight gestures | Parent retains full momentum and gesture priority |
 
 Benchmarks were captured on CMS articles up to 3k words in a 60 fps RN dev build. The bridge batches DOM mutations so even long documents resize without thrashing the JS thread.
+### 📦 Bundle & tree-shaking
 
+- Ships as ESM-first (`lib/module/**`) with `"sideEffects": false`.
+- **Named exports only** — no default export — so every bundler can drop what you don't use.
+- Importing only `useAutoHeight` or `composeInjectedScript` does **not** pull the injected-bridge string into your bundle.
 ## ✅ Testing
 
 ```sh

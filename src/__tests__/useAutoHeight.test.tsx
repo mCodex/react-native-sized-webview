@@ -1,4 +1,4 @@
-import { render, act } from '@testing-library/react-native';
+import { act, render } from '@testing-library/react-native';
 
 import { useAutoHeight } from '../hooks/useAutoHeight';
 
@@ -36,7 +36,9 @@ const flushRaf = () => {
     typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
-  callbacks.forEach((callback) => callback && callback(now));
+  callbacks.forEach((callback) => {
+    callback?.(now);
+  });
 };
 
 describe('useAutoHeight', () => {
@@ -85,12 +87,46 @@ describe('useAutoHeight', () => {
     unmount();
   });
 
+  it('returns undefined height until the first valid payload when minHeight is 0', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    expect(latest.height).toBeUndefined();
+
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:312');
+    });
+
+    act(() => {
+      flushRaf();
+    });
+
+    expect(latest.height).toBe(312);
+    expect(onHeightChange).toHaveBeenLastCalledWith(312);
+    unmount();
+  });
+
+  it('rejects payloads above the MAX_COMMITTED_HEIGHT safety cap', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    act(() => {
+      latest.setHeightFromPayload('__RN_SIZED_WV__:9999999');
+    });
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBeUndefined();
+    unmount();
+  });
+
   it('ignores invalid or insignificant height updates', () => {
     const { unmount } = render(
       <Harness minHeight={64} onHeightChange={onHeightChange} />
     );
 
-    const initialHeight = latest.height;
+    const initialHeight = latest.height as number;
 
     act(() => {
       latest.setHeightFromPayload('not-a-number');
