@@ -7,7 +7,7 @@
  * layout until a real height has been committed — a behavior required for
  * correct rendering inside iOS 26 WKWebView.
  */
-export const AUTO_HEIGHT_BRIDGE = `(() => {
+export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
   var WRAPPER_ID = '__RN_SIZED_WEBVIEW_WRAPPER__';
   var TRACKED_FLAG = '__RN_SIZED_WEBVIEW_MEDIA__';
@@ -18,6 +18,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
   var INITIAL_FALLBACK_MS = 600;
   var MAX_FALLBACK_MS = 4000;
   var MAX_REASONABLE_HEIGHT = 120000;
+  var MAX_CONTENT_SCAN_NODES = 1600;
   var WARMUP_MIN_HEIGHT = 2;
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -196,6 +197,16 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     AUDIO: true,
   };
 
+  var hasMeaningfulText = function (text) {
+    if (!text) {
+      return false;
+    }
+
+    // String.prototype.trim treats non-breaking spaces as empty, even though
+    // HTML editors commonly use &nbsp; as visible layout content.
+    return text.replace(/[\t\n\f\r ]+/g, '').length > 0;
+  };
+
   var hasRenderableContent = function (node) {
     if (!node || !node.childNodes || !node.childNodes.length) {
       return false;
@@ -204,7 +215,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     var child = node.firstChild;
     while (child) {
       if (child.nodeType === 3) {
-        if (child.textContent && child.textContent.trim()) {
+        if (hasMeaningfulText(child.textContent)) {
           return true;
         }
       } else if (child.nodeType === 1) {
@@ -238,7 +249,7 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       return (
         node &&
         node.nodeType === 3 &&
-        (!node.textContent || !node.textContent.trim())
+        !hasMeaningfulText(node.textContent)
       );
     };
 
@@ -314,6 +325,128 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
     );
   };
 
+  var readStyleNumber = function (element, property) {
+    if (!element || typeof window.getComputedStyle !== 'function') {
+      return 0;
+    }
+
+    var styles = window.getComputedStyle(element);
+    if (!styles) {
+      return 0;
+    }
+
+    var value = parseFloat(styles[property]);
+    return isFinite(value) ? value : 0;
+  };
+
+  var readElementBottom = function (element, rootTop) {
+    if (!element || typeof element.getBoundingClientRect !== 'function') {
+      return 0;
+    }
+
+    var rect = element.getBoundingClientRect();
+    if (!rect || typeof rect.bottom !== 'number') {
+      return 0;
+    }
+
+    return Math.max(
+      0,
+      rect.bottom -
+        rootTop +
+        Math.max(0, readStyleNumber(element, 'marginBottom'))
+    );
+  };
+
+  var readTextBottom = function (node, rootTop) {
+    if (!hasMeaningfulText(node && node.textContent)) {
+      return 0;
+    }
+
+    if (typeof document.createRange !== 'function') {
+      return 0;
+    }
+
+    var range = document.createRange();
+    var bottom = 0;
+
+    try {
+      range.selectNodeContents(node);
+      var rects = range.getClientRects();
+      for (var index = 0; index < rects.length; index += 1) {
+        var rect = rects[index];
+        if (rect && typeof rect.bottom === 'number') {
+          bottom = Math.max(bottom, rect.bottom - rootTop);
+        }
+      }
+    } catch (error) {
+      // no-op
+    }
+
+    if (typeof range.detach === 'function') {
+      range.detach();
+    }
+
+    return Math.max(0, bottom);
+  };
+
+  var readRenderedContentHeight = function (container) {
+    if (!container || typeof container.getBoundingClientRect !== 'function') {
+      return 0;
+    }
+
+    var containerRect = container.getBoundingClientRect();
+    var rootTop =
+      containerRect && typeof containerRect.top === 'number'
+        ? containerRect.top
+        : 0;
+    var maxBottom = 0;
+    var visited = 0;
+
+    var scan = function (node) {
+      if (!node || visited >= MAX_CONTENT_SCAN_NODES) {
+        return;
+      }
+
+      visited += 1;
+
+      if (node.nodeType === 3) {
+        maxBottom = Math.max(maxBottom, readTextBottom(node, rootTop));
+        return;
+      }
+
+      if (node.nodeType !== 1) {
+        return;
+      }
+
+      var tag = (node.tagName || '').toUpperCase();
+      if (
+        tag === 'SCRIPT' ||
+        tag === 'STYLE' ||
+        tag === 'META' ||
+        tag === 'LINK' ||
+        tag === 'TITLE'
+      ) {
+        return;
+      }
+
+      maxBottom = Math.max(maxBottom, readElementBottom(node, rootTop));
+
+      var child = node.firstChild;
+      while (child && visited < MAX_CONTENT_SCAN_NODES) {
+        scan(child);
+        child = child.nextSibling;
+      }
+    };
+
+    var child = container.firstChild;
+    while (child && visited < MAX_CONTENT_SCAN_NODES) {
+      scan(child);
+      child = child.nextSibling;
+    }
+
+    return Math.max(0, maxBottom);
+  };
+
   var measureHeight = function () {
     var html = document.documentElement;
     var body = document.body;
@@ -325,21 +458,19 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       pruneTrailingNodes(wrapper);
     }
 
-    // Fast path: when the wrapper exists (it wraps every body child) its
-    // layout box is authoritative, so a single reflow via one element is
-    // enough. Reading multiple elements forces a reflow per read. Only fall
-    // back to html/body when the wrapper is unavailable.
+    // Fast path: wrapper/body/html layout boxes usually cover the document.
+    // The rendered-content pass below is a bounded backstop for margin
+    // collapsing, overflow, and WKWebView cases where scrollHeight undercounts.
     var targets = [];
 
     if (wrapper) {
       targets.push(wrapper);
-    } else {
-      if (body) {
-        targets.push(body);
-      }
-      if (html && html !== body) {
-        targets.push(html);
-      }
+    }
+    if (body && body !== wrapper) {
+      targets.push(body);
+    }
+    if (html && html !== body && html !== wrapper) {
+      targets.push(html);
     }
 
     if (!targets.length) {
@@ -351,6 +482,13 @@ export const AUTO_HEIGHT_BRIDGE = `(() => {
       var value = readElementHeight(targets[index]);
       if (value > maxHeight) {
         maxHeight = value;
+      }
+    }
+
+    if (wrapper) {
+      var renderedHeight = readRenderedContentHeight(wrapper);
+      if (renderedHeight > maxHeight) {
+        maxHeight = renderedHeight;
       }
     }
 
