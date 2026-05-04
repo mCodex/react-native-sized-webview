@@ -56,6 +56,7 @@ const WEBVIEW_DEFAULTS = {
 } satisfies Partial<WebViewProps>;
 
 const TRANSPARENT_WEBVIEW_STYLE = { backgroundColor: 'transparent' as const };
+const MEASURED_WEBVIEW_STYLE = { flex: 1, width: '100%' as const };
 
 /**
  * A `react-native-webview` that sizes itself to match its rendered HTML.
@@ -129,8 +130,12 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
   }, [containerStyle, height]);
 
   const webViewStyles = useMemo(
-    () => [TRANSPARENT_WEBVIEW_STYLE, style],
-    [style]
+    () => [
+      TRANSPARENT_WEBVIEW_STYLE,
+      height == null ? undefined : MEASURED_WEBVIEW_STYLE,
+      style,
+    ],
+    [height, style]
   );
 
   return (

@@ -73,6 +73,7 @@ describe('SizedWebView', () => {
 
     expect(props.style).toEqual([
       { backgroundColor: 'transparent' },
+      { flex: 1, width: '100%' },
       { opacity: 0.5 },
     ]);
     expect(props.originWhitelist).toEqual(['http://*', 'https://*']);
