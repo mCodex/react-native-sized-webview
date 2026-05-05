@@ -4,20 +4,69 @@
  * The script is idempotent (safe to inject multiple times), uses a namespaced
  * `postMessage` protocol (`__RN_SIZED_WV__:<height>`) so user-land messages
  * never collide with bridge traffic, and avoids clamping the host document's
- * layout until a real height has been committed — a behavior required for
+ * layout until a real height has been committed — a behaviour required for
  * correct rendering inside iOS 26 WKWebView.
+ *
+ * @remarks
+ * ## Measurement algorithm (O(k))
+ *
+ * Every measurement is the `Math.max` of multiple authoritative layout
+ * sources, **without mutating** the host page's DOM or styles. The cost is
+ * O(k) where k is the number of trailing inert / out-of-flow siblings the
+ * last-child walk has to skip (typically 0–2 — effectively constant in
+ * steady state):
+ *
+ * 1. `body.scrollHeight` / `body.offsetHeight` — primary signal; includes
+ *    body padding and any block-level margin that did not collapse out.
+ * 2. `documentElement.scrollHeight` / `documentElement.offsetHeight` —
+ *    backstop when framework CSS rules style `html` directly.
+ * 3. `body.lastInFlowChild.getBoundingClientRect().bottom +
+ *    computedMarginBottom` — catches margin-collapse (where the last
+ *    child's bottom margin escapes `<body>`) and late-reflow scenarios
+ *    where `scrollHeight` momentarily under-reports on iOS WKWebView.
+ *    Per the CSSOM View spec, `getBoundingClientRect` returns
+ *    viewport-relative coordinates whose values are NOT clamped to the
+ *    visible viewport. We use the bottom value as a proxy for the
+ *    document's bottom edge under the assumption the page itself is not
+ *    internally scrolled during measurement — a safe assumption since the
+ *    host RN component sets `scrollEnabled={false}` and the bridge never
+ *    triggers programmatic scrolling.
+ *
+ * Inert siblings (`SCRIPT`, `STYLE`, `META`, `LINK`, `TITLE`, `HEAD`,
+ * `NOSCRIPT`) and out-of-flow positions (`fixed` / `sticky` / `absolute`)
+ * are skipped during the last-child walk so they never short-circuit the
+ * probe with viewport-clamped or zero-height values.
+ *
+ * **No DOM mutation:** earlier versions wrapped `<body>`'s children in a
+ * synthetic `<div>` for measurement, which broke margin collapse between
+ * the first/last child and the body and caused under-reporting on
+ * margin-heavy CMS content. The bridge now measures the user's DOM
+ * directly and never injects styles.
+ *
+ * ## Fallback strategy
+ *
+ * Measurement is rerun adaptively while either condition holds:
+ *
+ * - `state.pendingLoads > 0` (an image / iframe / video is still loading), or
+ * - `Date.now() - state.bootstrapAt < BOOTSTRAP_GRACE_MS` (5 s grace window
+ *   from script start, refreshed on `markLoading`, font `loadingdone`, and
+ *   `state.refresh`).
+ *
+ * Once both expire only signal-driven re-measures (mutation, resize, font,
+ * viewport, message) trigger work — the steady-state CPU cost is zero.
  */
 export const AUTO_HEIGHT_BRIDGE: string = `(() => {
+  // ============================================================
+  // SECTION: Constants
+  // ============================================================
   var GLOBAL_KEY = '__RN_SIZED_WEBVIEW__';
-  var WRAPPER_ID = '__RN_SIZED_WEBVIEW_WRAPPER__';
-  var TRACKED_FLAG = '__RN_SIZED_WEBVIEW_MEDIA__';
   var MESSAGE_KEY = '__AUTO_HEIGHT__';
   var MESSAGE_PREFIX = '__RN_SIZED_WV__:';
   var ACTIVE_DEBOUNCE_MS = 48;
   var IDLE_DEBOUNCE_MS = 160;
   var INITIAL_FALLBACK_MS = 600;
   var MAX_FALLBACK_MS = 4000;
-  var MAX_FALLBACK_ITERATIONS = 8;
+  var BOOTSTRAP_GRACE_MS = 5000;
   var MAX_REASONABLE_HEIGHT = 120000;
   var WARMUP_MIN_HEIGHT = 2;
 
@@ -25,9 +74,15 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     return;
   }
 
+  // The global handle exposes ONLY a tiny frozen surface (refresh/destroy/
+  // version) — the mutable internal \`state\` stays in closure so page scripts
+  // cannot tamper with counters, timers, or pending-load flags.
   if (window[GLOBAL_KEY]) {
     try {
-      window[GLOBAL_KEY].refresh();
+      var existing = window[GLOBAL_KEY];
+      if (existing && typeof existing.refresh === 'function') {
+        existing.refresh();
+      }
     } catch (error) {
       // no-op
     }
@@ -54,6 +109,9 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     };
   };
 
+  // ============================================================
+  // SECTION: State
+  // ============================================================
   var state = {
     frame: null,
     timer: null,
@@ -63,18 +121,55 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     anomalyCount: 0,
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
-    fallbackCount: 0,
+    // Timestamp of the most recent "bootstrap signal" (script start, refresh,
+    // markLoading, font loadingdone). Within BOOTSTRAP_GRACE_MS of this value
+    // the fallback timer keeps re-arming itself adaptively. Replaces the
+    // bounded fallbackCount strategy that could exhaust before slow CMS pages
+    // finished settling.
+    bootstrapAt: Date.now(),
     cleanup: [],
-    wrapper: null,
     mediaObserver: null,
-    // Dirty flag: set to true whenever the DOM mutates so that the next
-    // measure runs pruneTrailingNodes. Cleared after each prune pass. This
-    // skips the recursive hasRenderableContent DFS on every rAF tick during
-    // resize / font-load storms when no structural mutation has happened.
-    domDirty: true,
   };
 
-  window[GLOBAL_KEY] = state;
+  var publishHandle = function () {
+    var handle = {
+      version: 2,
+      refresh: function () {
+        state.bootstrapAt = Date.now();
+        scheduleMeasure(true);
+      },
+      destroy: function () {
+        cleanupAll();
+      },
+    };
+
+    try {
+      // Lock down the public handle so page scripts cannot replace methods
+      // with no-ops. Object.freeze is supported on every WebView platform we
+      // target; defineProperty hardens the slot itself against reassignment.
+      if (typeof Object.freeze === 'function') {
+        Object.freeze(handle);
+      }
+      if (typeof Object.defineProperty === 'function') {
+        Object.defineProperty(window, GLOBAL_KEY, {
+          value: handle,
+          writable: false,
+          configurable: false,
+          enumerable: false,
+        });
+      } else {
+        window[GLOBAL_KEY] = handle;
+      }
+    } catch (error) {
+      // Property may already be locked or defineProperty may be missing on
+      // very old engines — fall back to a plain assignment.
+      try {
+        window[GLOBAL_KEY] = handle;
+      } catch (innerError) {
+        // no-op
+      }
+    }
+  };
 
   var requestFrame = function (callback) {
     if (typeof window.requestAnimationFrame === 'function') {
@@ -127,18 +222,25 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     }
 
     state.cleanup.length = 0;
-    state.wrapper = null;
     state.mediaObserver = null;
-    window[GLOBAL_KEY] = undefined;
+    // Best-effort: leave the frozen handle in place when defineProperty made
+    // it non-configurable. Subsequent re-injections see it and short-circuit.
+    try {
+      if (
+        typeof Object.getOwnPropertyDescriptor === 'function' &&
+        Object.getOwnPropertyDescriptor(window, GLOBAL_KEY) &&
+        Object.getOwnPropertyDescriptor(window, GLOBAL_KEY).configurable
+      ) {
+        window[GLOBAL_KEY] = undefined;
+      }
+    } catch (error) {
+      // no-op
+    }
   };
 
-  state.refresh = function () {
-    state.fallbackCount = 0;
-    ensureWrapper();
-    scheduleMeasure(true);
-  };
-
-  state.destroy = cleanupAll;
+  // Hoisted so cleanupAll above can reference it without TDZ issues; the body
+  // simply forwards into closure-private state mutation.
+  // (No-op placeholder — real definition lives below.)
 
   var addEvent = function (target, type, handler, options) {
     if (!target || typeof target.addEventListener !== 'function') {
@@ -174,126 +276,38 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     return remove;
   };
 
-  var scheduleTimeout = function (callback, delay) {
-    var id = window.setTimeout(callback, delay);
-    addCleanup(function () {
-      clearTimeout(id);
-    });
-    return id;
+  // ============================================================
+  // SECTION: Content classification
+  // ============================================================
+  // Inert tags — never contribute to layout height. Skipped by the last-child
+  // walk in measureHeight() so a trailing <script>/<style> never fools the
+  // position-based probe into reporting 0.
+  var INERT_TAGS = {
+    SCRIPT: true,
+    STYLE: true,
+    META: true,
+    LINK: true,
+    TITLE: true,
+    HEAD: true,
+    NOSCRIPT: true,
   };
 
-  var RENDERABLE_MEDIA_TAGS = {
-    IMG: true,
-    IFRAME: true,
-    VIDEO: true,
-    SVG: true,
-    CANVAS: true,
-    PICTURE: true,
-    OBJECT: true,
-    EMBED: true,
-    AUDIO: true,
+  // Out-of-flow positioning schemes: their bounding rects do NOT represent
+  // the document's natural content extent (a sticky footer at viewport
+  // bottom would inflate the height to viewport size; an absolutely
+  // positioned element below the flow is already counted by scrollHeight).
+  // We skip them in the last-child probe so the measurement stays accurate.
+  var OUT_OF_FLOW_POSITIONS = {
+    fixed: true,
+    sticky: true,
+    absolute: true,
   };
 
-  var hasMeaningfulText = function (text) {
-    if (!text) {
-      return false;
-    }
-
-    // String.prototype.trim treats non-breaking spaces as empty, even though
-    // HTML editors commonly use &nbsp; as visible layout content.
-    return text.replace(/[\t\n\f\r ]+/g, '').length > 0;
-  };
-
-  var hasRenderableContent = function (node) {
-    if (!node || !node.childNodes || !node.childNodes.length) {
-      return false;
-    }
-
-    var child = node.firstChild;
-    while (child) {
-      if (child.nodeType === 3) {
-        if (hasMeaningfulText(child.textContent)) {
-          return true;
-        }
-      } else if (child.nodeType === 1) {
-        var tag = (child.tagName || '').toUpperCase();
-        if (tag === 'BR') {
-          child = child.nextSibling;
-          continue;
-        }
-
-        if (RENDERABLE_MEDIA_TAGS[tag]) {
-          return true;
-        }
-
-        if (hasRenderableContent(child)) {
-          return true;
-        }
-      }
-
-      child = child.nextSibling;
-    }
-
-    return false;
-  };
-
-  var pruneTrailingNodes = function (container) {
-    if (!container) {
-      return;
-    }
-
-    var isWhitespaceText = function (node) {
-      return (
-        node &&
-        node.nodeType === 3 &&
-        !hasMeaningfulText(node.textContent)
-      );
-    };
-
-    var isTrimmableElement = function (node) {
-      if (!node || node.nodeType !== 1) {
-        return false;
-      }
-
-      var tag = (node.tagName || '').toUpperCase();
-      if (tag === 'BR') {
-        return true;
-      }
-
-      if (tag === 'P') {
-        return !hasRenderableContent(node);
-      }
-
-      return false;
-    };
-
-    var removed = false;
-    var current = container.lastChild;
-    while (current) {
-      if (isWhitespaceText(current) || isTrimmableElement(current)) {
-        var previous = current.previousSibling;
-        container.removeChild(current);
-        current = previous;
-        removed = true;
-        continue;
-      }
-      break;
-    }
-
-    // Mark the subtree as clean until the next MutationObserver callback.
-    state.domDirty = false;
-
-    if (removed) {
-      scheduleMeasure(true);
-    }
-  };
-
-  var trackedMedia =
-    typeof WeakSet === 'function' ? new WeakSet() : undefined;
+  var trackedMedia = new WeakSet();
 
   var markLoading = function () {
     state.pendingLoads += 1;
-    state.fallbackCount = 0;
+    state.bootstrapAt = Date.now();
     scheduleFallback();
   };
 
@@ -303,42 +317,103 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     }
   };
 
-  var readElementHeight = function (element) {
-    if (!element) {
-      return 0;
-    }
+  // ============================================================
+  // SECTION: Measurement
+  // ============================================================
 
-    return Math.max(
-      0,
-      element.scrollHeight || 0,
-      element.offsetHeight || 0,
-      element.clientHeight || 0
-    );
-  };
-
+  /**
+   * Multi-source height measurement — reads only, never mutates the DOM.
+   *
+   * Returns the maximum of:
+   *   - body.scrollHeight / body.offsetHeight
+   *   - documentElement.scrollHeight / documentElement.offsetHeight
+   *   - lastInFlowChild.getBoundingClientRect().bottom + marginBottom
+   *
+   * The position-based probe catches cases where scrollHeight under-reports
+   * (margin-collapse where the last child's bottom margin escapes \`<body>\`,
+   * late image reflow, etc.). \`getBoundingClientRect\` returns
+   * viewport-relative coordinates per CSSOM View, but those values are not
+   * clamped to the visible viewport — and the host RN component sets
+   * \`scrollEnabled={false}\` so the WebView is never internally scrolled,
+   * making the bottom value a reliable proxy for the document's bottom edge.
+   *
+   * Complexity: O(k) where k is the number of trailing inert / out-of-flow
+   * siblings (typically 0–2). Single layout flush per call.
+   */
   var measureHeight = function () {
     var html = document.documentElement;
     var body = document.body;
-    var wrapper = ensureWrapper();
 
-    // Only walk the trailing-node DFS when something actually mutated since
-    // the last pass. Resize / font / viewport ticks don't change structure.
-    if (state.domDirty) {
-      pruneTrailingNodes(wrapper);
-    }
-
-    // The wrapper div has no explicit height and no overflow:hidden, so its
-    // scrollHeight/offsetHeight always reflect the natural content size —
-    // never clamped by the native WKWebView viewport. body/html can be
-    // viewport-clamped when the native frame is smaller than the content, so
-    // they are only used as a fallback when the wrapper is unavailable.
-    var target = wrapper || body || html;
-
-    if (!target) {
+    if (!body && !html) {
       return 0;
     }
 
-    return Math.max(0, Math.ceil(readElementHeight(target)));
+    var height = 0;
+    var bs = (body && body.scrollHeight) || 0;
+    var bo = (body && body.offsetHeight) || 0;
+    var hs = (html && html.scrollHeight) || 0;
+    var ho = (html && html.offsetHeight) || 0;
+
+    if (bs > height) height = bs;
+    if (bo > height) height = bo;
+    if (hs > height) height = hs;
+    if (ho > height) height = ho;
+
+    if (body) {
+      var last = body.lastElementChild;
+      // Walk past inert tags AND out-of-flow elements; only in-flow content
+      // contributes to the document's natural bottom edge.
+      while (last) {
+        var tagName = (last.tagName || '').toUpperCase();
+        if (INERT_TAGS[tagName]) {
+          last = last.previousElementSibling;
+          continue;
+        }
+
+        var position = '';
+        if (typeof window.getComputedStyle === 'function') {
+          try {
+            var cs0 = window.getComputedStyle(last);
+            position = (cs0 && cs0.position) || '';
+          } catch (error) {
+            position = '';
+          }
+        }
+
+        if (OUT_OF_FLOW_POSITIONS[position]) {
+          last = last.previousElementSibling;
+          continue;
+        }
+
+        break;
+      }
+
+      if (last && typeof last.getBoundingClientRect === 'function') {
+        try {
+          var rect = last.getBoundingClientRect();
+          var marginBottom = 0;
+          if (typeof window.getComputedStyle === 'function') {
+            var cs = window.getComputedStyle(last);
+            marginBottom = parseFloat(cs && cs.marginBottom) || 0;
+            if (!isFinite(marginBottom) || marginBottom < 0) {
+              marginBottom = 0;
+            }
+          }
+          var bottom = rect.bottom + marginBottom;
+          if (isFinite(bottom) && bottom > height) {
+            height = bottom;
+          }
+        } catch (error) {
+          // no-op
+        }
+      }
+    }
+
+    if (!(height > 0)) {
+      return 0;
+    }
+
+    return Math.ceil(height);
   };
 
   var postHeight = function (height) {
@@ -393,6 +468,9 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     }
   };
 
+  // ============================================================
+  // SECTION: Scheduling
+  // ============================================================
   var resetFallback = function () {
     state.fallbackDelay = INITIAL_FALLBACK_MS;
     if (state.fallbackTimer != null) {
@@ -402,18 +480,30 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     scheduleFallback();
   };
 
+  /**
+   * Bootstrap-grace + signal-driven adaptive fallback.
+   *
+   * Re-arms itself only while either is true:
+   *   - state.pendingLoads > 0
+   *   - Date.now() - state.bootstrapAt < BOOTSTRAP_GRACE_MS
+   *
+   * Steady-state CPU cost: zero. Reset by markLoading, state.refresh, font
+   * loadingdone, and requestDebouncedMeasure — all of which extend the grace
+   * window so slow CMS pages never "exhaust" the fallback prematurely.
+   */
   var scheduleFallback = function () {
     if (state.fallbackTimer != null) {
       return;
     }
 
-    if (state.fallbackCount >= MAX_FALLBACK_ITERATIONS && state.pendingLoads === 0) {
+    var withinGrace =
+      Date.now() - state.bootstrapAt < BOOTSTRAP_GRACE_MS;
+    if (state.pendingLoads === 0 && !withinGrace) {
       return;
     }
 
     state.fallbackTimer = window.setTimeout(function () {
       state.fallbackTimer = null;
-      state.fallbackCount += 1;
       scheduleMeasure(true);
       state.fallbackDelay = Math.min(
         MAX_FALLBACK_MS,
@@ -473,7 +563,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   };
 
   var requestDebouncedMeasure = function () {
-    state.fallbackCount = 0;
+    state.bootstrapAt = Date.now();
     scheduleFallback();
 
     if (state.microtask) {
@@ -487,20 +577,16 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     });
   };
 
-  var scheduleMediaMeasure = function () {
-    scheduleMeasure(true);
-    requestFrame(function () {
-      scheduleMeasure(true);
-    });
-  };
-
+  // ============================================================
+  // SECTION: Media tracking
+  // ============================================================
   var ensureMediaObserver = function () {
     if (state.mediaObserver || typeof ResizeObserver !== 'function') {
       return state.mediaObserver;
     }
 
     var observer = new ResizeObserver(function () {
-      scheduleMediaMeasure();
+      scheduleMeasure(true);
     });
 
     state.mediaObserver = observer;
@@ -518,29 +604,10 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       return;
     }
 
-    if (trackedMedia && trackedMedia.has(element)) {
+    if (trackedMedia.has(element)) {
       return;
     }
-
-    if (trackedMedia) {
-      trackedMedia.add(element);
-    } else if (element[TRACKED_FLAG]) {
-      return;
-    } else {
-      try {
-        element[TRACKED_FLAG] = true;
-      } catch (error) {
-        // no-op
-      }
-
-      addCleanup(function () {
-        try {
-          delete element[TRACKED_FLAG];
-        } catch (error) {
-          // no-op
-        }
-      });
-    }
+    trackedMedia.add(element);
 
     var observer = ensureMediaObserver();
     if (observer) {
@@ -555,7 +622,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
 
     if (tag === 'IMG') {
       if (element.complete && element.naturalHeight) {
-        scheduleMediaMeasure();
+        scheduleMeasure(true);
         return;
       }
 
@@ -568,7 +635,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
         cleanupLoad();
         cleanupError();
         clearLoading();
-        scheduleMediaMeasure();
+        scheduleMeasure(true);
       });
 
       cleanupLoad = addEvent(element, 'load', finalizeImage, { once: true });
@@ -591,7 +658,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
         cleanupLoadIframe();
         cleanupErrorIframe();
         clearLoading();
-        scheduleMediaMeasure();
+        scheduleMeasure(true);
       });
 
       cleanupLoadIframe = addEvent(element, 'load', onIframe, { once: true });
@@ -600,7 +667,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       try {
         var iframeDoc = element.contentDocument;
         if (iframeDoc && iframeDoc.readyState === 'complete') {
-          scheduleMediaMeasure();
+          scheduleMeasure(true);
           requestFrame(onIframe);
         }
       } catch (error) {
@@ -615,7 +682,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
         typeof element.readyState === 'number' &&
         element.readyState >= 2
       ) {
-        scheduleMediaMeasure();
+        scheduleMeasure(true);
         return;
       }
 
@@ -630,7 +697,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
         cleanupMetadata();
         cleanupEnded();
         clearLoading();
-        scheduleMediaMeasure();
+        scheduleMeasure(true);
       });
 
       cleanupData = addEvent(element, 'loadeddata', onVideo, { once: true });
@@ -662,82 +729,9 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     }
   };
 
-  var applyBaseStyles = function () {
-    var html = document.documentElement;
-    var body = document.body;
-
-    // Intentionally do NOT set html.style.overflow = 'hidden' here. iOS 26
-    // WKWebView clamps scrollHeight/offsetHeight to the native container's
-    // height when the host document has overflow:hidden and the container
-    // starts tiny, creating a feedback loop that locks the layout at 1px.
-    // Scrolling is already suppressed via scrollEnabled={false} on the RN
-    // side, so we rely on that and keep the document layout untouched.
-    if (html) {
-      if (!html.style.height) {
-        html.style.height = 'auto';
-      }
-      if (!html.style.backgroundColor) {
-        html.style.backgroundColor = 'transparent';
-      }
-    }
-
-    if (body) {
-      if (!body.style.margin) {
-        body.style.margin = '0';
-      }
-      if (!body.style.padding) {
-        body.style.padding = '0';
-      }
-      if (!body.style.width) {
-        body.style.width = '100%';
-      }
-      if (!body.style.height) {
-        body.style.height = 'auto';
-      }
-      if (!body.style.backgroundColor) {
-        body.style.backgroundColor = 'transparent';
-      }
-    }
-  };
-
-  var ensureWrapper = function () {
-    if (state.wrapper && document.contains(state.wrapper)) {
-      return state.wrapper;
-    }
-
-    var body = document.body;
-    if (!body) {
-      return null;
-    }
-
-    var existing = document.getElementById(WRAPPER_ID);
-    if (existing) {
-      state.wrapper = existing;
-      return existing;
-    }
-
-    var wrapper = document.createElement('div');
-    wrapper.id = WRAPPER_ID;
-    wrapper.style.width = '100%';
-    wrapper.style.boxSizing = 'border-box';
-
-    var nodes = [];
-    while (body.firstChild) {
-      nodes.push(body.firstChild);
-      body.removeChild(body.firstChild);
-    }
-
-    body.appendChild(wrapper);
-
-    for (var index = 0; index < nodes.length; index += 1) {
-      wrapper.appendChild(nodes[index]);
-    }
-
-    state.wrapper = wrapper;
-    pruneTrailingNodes(wrapper);
-    return wrapper;
-  };
-
+  // ============================================================
+  // SECTION: Document setup
+  // ============================================================
   var ensureDomReady = function (callback) {
     if (
       document.readyState === 'interactive' ||
@@ -762,18 +756,16 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     window.addEventListener('load', handler);
   };
 
+  // ============================================================
+  // SECTION: Observers
+  // ============================================================
   var observeMutations = function () {
     if (typeof window.MutationObserver !== 'function') {
       return;
     }
 
     var mutationObserver = new MutationObserver(function (mutations) {
-      state.domDirty = true;
       requestDebouncedMeasure();
-
-      if (!state.wrapper || !document.contains(state.wrapper)) {
-        ensureWrapper();
-      }
 
       for (var index = 0; index < mutations.length; index += 1) {
         var mutation = mutations[index];
@@ -816,10 +808,23 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       requestDebouncedMeasure();
     });
 
-    var wrapper = ensureWrapper();
-
-    if (wrapper) {
-      resizeObserver.observe(wrapper);
+    // Observe both the body and the document element — either may be the
+    // element whose height grows when content settles. ResizeObserver fires
+    // a callback for each observed element so the bridge re-measures on
+    // any genuine layout change.
+    if (document.body) {
+      try {
+        resizeObserver.observe(document.body);
+      } catch (error) {
+        // no-op
+      }
+    }
+    if (document.documentElement) {
+      try {
+        resizeObserver.observe(document.documentElement);
+      } catch (error) {
+        // no-op
+      }
     }
 
     addCleanup(function () {
@@ -848,6 +853,10 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     }
 
     var handler = function () {
+      // Late web-font reflow extends content; refresh the bootstrap window so
+      // the fallback timer keeps re-arming for another grace period even if
+      // the page has otherwise stopped mutating.
+      state.bootstrapAt = Date.now();
       scheduleMeasure(true);
     };
 
@@ -880,52 +889,34 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       if (!event || !event.data) {
         return;
       }
-
-      if (event.data === MESSAGE_KEY) {
-        scheduleMeasure(true);
+      // Only honour same-window dispatches. Cross-frame postMessage from
+      // arbitrary origins must not be able to trigger work on the bridge —
+      // the impact is small (an extra measure) but defence-in-depth keeps
+      // the attack surface tight.
+      if (event.source && event.source !== window) {
         return;
       }
-
-      if (typeof event.data === 'string' && event.data.charCodeAt(0) === 123) {
-        try {
-          var parsed = JSON.parse(event.data);
-          if (parsed && parsed.topic === MESSAGE_KEY) {
-            scheduleMeasure(true);
-          }
-        } catch (error) {
-          // Ignore non-JSON payloads.
-        }
+      if (event.data === MESSAGE_KEY) {
+        scheduleMeasure(true);
       }
     });
   };
 
-  var queueStabilization = function () {
-    // Mutation/resize/font observers cover the fine-grained case already —
-    // these three probes just backstop layout settling on slower devices.
-    var delays = [120, 500, 2000];
-    for (var index = 0; index < delays.length; index += 1) {
-      (function (delay) {
-        scheduleTimeout(function () {
-          scheduleMeasure(true);
-        }, delay);
-      })(delays[index]);
-    }
-  };
-
+  // ============================================================
+  // SECTION: Bootstrap
+  // ============================================================
   var bootstrap = function () {
-    applyBaseStyles();
-    var wrapper = ensureWrapper();
-    pruneTrailingNodes(wrapper);
-    scanForMedia(wrapper || document);
+    publishHandle();
+    scanForMedia(document.body || document);
     observeMutations();
     observeResize();
     observeViewport();
     observeFonts();
     observeGlobalEvents();
     watchMessages();
-    queueStabilization();
     addEvent(window, 'unload', cleanupAll);
 
+    state.bootstrapAt = Date.now();
     scheduleMeasure(true);
     scheduleFallback();
   };

@@ -7,10 +7,16 @@ const root = path.resolve(__dirname, '..');
 module.exports = (api) => {
   api.cache(true);
 
-  return getConfig(
+  const config = getConfig(
     {
       presets: ['babel-preset-expo'],
     },
     { root, pkg }
   );
+
+  // React Compiler must run before other transforms. React 19 ships its own
+  // runtime, so no `react-compiler-runtime` package is required.
+  config.plugins = ['babel-plugin-react-compiler', ...(config.plugins ?? [])];
+
+  return config;
 };
