@@ -136,6 +136,35 @@ describe('useAutoHeight', () => {
     unmount();
   });
 
+  it('rejects prefixed payloads that are not plain decimal numbers', () => {
+    const { unmount } = render(
+      <Harness minHeight={0} onHeightChange={onHeightChange} />
+    );
+
+    // Hex, exponential, leading/trailing whitespace, and signed values must
+    // all be treated as forged input — the bridge only emits plain decimals.
+    const forgedPayloads = [
+      '__RN_SIZED_WV__:0x100',
+      '__RN_SIZED_WV__:1e10',
+      '__RN_SIZED_WV__: 360 ',
+      '__RN_SIZED_WV__:+360',
+      '__RN_SIZED_WV__:-360',
+      '__RN_SIZED_WV__:NaN',
+      '__RN_SIZED_WV__:Infinity',
+    ];
+
+    for (const payload of forgedPayloads) {
+      act(() => {
+        latest.setHeightFromPayload(payload);
+      });
+    }
+
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+    expect(latest.height).toBeUndefined();
+    expect(onHeightChange).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it('ignores invalid or insignificant height updates', () => {
     const { unmount } = render(
       <Harness minHeight={64} onHeightChange={onHeightChange} />

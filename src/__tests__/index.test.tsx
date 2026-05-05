@@ -86,7 +86,7 @@ describe('SizedWebView', () => {
     );
     expect(props.injectedJavaScriptBeforeContentLoaded).toBe(bridgeScript);
     expect(props.injectedJavaScript).toBe(
-      composeInjectedScript("console.log('after');")
+      composeInjectedScript(AUTO_HEIGHT_BRIDGE, "console.log('after');")
     );
 
     act(() => {

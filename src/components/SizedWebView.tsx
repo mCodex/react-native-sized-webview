@@ -83,13 +83,44 @@ const TRANSPARENT_WEBVIEW_STYLE = { backgroundColor: 'transparent' as const };
 /**
  * A `react-native-webview` that sizes itself to match its rendered HTML.
  *
+ * @remarks
  * - Respects `javaScriptEnabled={false}` (auto-sizing is skipped, `minHeight`
  *   or `containerStyle.height` becomes the authoritative height).
- * - Uses a namespaced `onMessage` protocol so user-land messages never
- *   collide with the internal height bridge.
+ * - Uses a namespaced `onMessage` protocol (`__RN_SIZED_WV__:<height>`) so
+ *   user-land messages never collide with the internal height bridge.
  * - Returns `undefined` for the container height until the first valid
  *   measurement when `minHeight === 0`, avoiding the iOS 26 WKWebView
  *   feedback loop that collapses content to 1px.
+ * - The injected bridge measures via the `Math.max` of multiple authoritative
+ *   layout sources (`scrollHeight`, `offsetHeight`, last-child
+ *   `getBoundingClientRect().bottom + marginBottom`) so it never under-reports
+ *   on iOS WKWebView even with margin-collapse, late image reflow, or async
+ *   web fonts.
+ *
+ * @example
+ * ```tsx
+ * import { SizedWebView } from 'react-native-sized-webview';
+ *
+ * export function ArticleBody({ html }: { html: string }) {
+ *   return (
+ *     <SizedWebView
+ *       source={{ html }}
+ *       containerStyle={{ marginHorizontal: 16 }}
+ *       onHeightChange={(h) => console.log('measured', h)}
+ *     />
+ *   );
+ * }
+ * ```
+ *
+ * @example Inside a ScrollView with a centered loading state:
+ * ```tsx
+ * <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
+ *   <SizedWebView
+ *     source={{ uri: 'https://example.com/article' }}
+ *     loadingContainerStyle={{ flex: 1 }}
+ *   />
+ * </ScrollView>
+ * ```
  */
 const SizedWebViewImpl = (props: SizedWebViewProps) => {
   const {
@@ -131,6 +162,18 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
     [isJsEnabled, onMessage, setHeightFromPayload]
   );
 
+  // The bridge is intentionally injected at BOTH lifecycle hooks:
+  //
+  // - `injectedJavaScriptBeforeContentLoaded` runs at WKUserScriptInjectionTimeAtDocumentStart
+  //   so observers/styles are wired up before any user CSS or scripts can
+  //   interfere. This is the preferred path on Android.
+  // - `injectedJavaScript` runs after the document loads and is the only
+  //   reliable path on iOS WKWebView for inline `source.html` payloads —
+  //   `injectedJavaScriptBeforeContentLoaded` is documented to occasionally
+  //   miss `loadHTMLString:baseURL:` loads (react-native-webview#1498).
+  //
+  // The bridge is idempotent: a second injection finds the frozen global
+  // handle, calls `refresh()` to re-run measurement, and returns.
   const composedBeforeContentScript = useMemo(
     () =>
       composeInjectedScript(
@@ -141,8 +184,12 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
   );
 
   const composedInjectedScript = useMemo(
-    () => composeInjectedScript(injectedJavaScript),
-    [injectedJavaScript]
+    () =>
+      composeInjectedScript(
+        isJsEnabled ? AUTO_HEIGHT_BRIDGE : undefined,
+        injectedJavaScript
+      ),
+    [isJsEnabled, injectedJavaScript]
   );
 
   const containerStyles = useMemo<StyleProp<ViewStyle>>(() => {
@@ -176,6 +223,11 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
 SizedWebViewImpl.displayName = 'SizedWebView';
 
 /**
- * Memoized `SizedWebView`. See {@link SizedWebViewProps} for configuration.
+ * Memoized `SizedWebView` — a drop-in replacement for `WebView` from
+ * `react-native-webview` that auto-sizes its container to the rendered HTML.
+ *
+ * @see {@link SizedWebViewProps} for the full prop reference.
+ * @see {@link useAutoHeight} if you need the bare height-tracking hook
+ *   without the component shell.
  */
 export const SizedWebView = memo(SizedWebViewImpl);

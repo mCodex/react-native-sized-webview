@@ -84,15 +84,17 @@ yarn
 yarn example ios   # or yarn example android
 ```
 
-The example showcases:
+The example showcases four scenarios the auto-sizing pipeline must handle correctly:
 
-- Auto-sizing dynamic HTML with toggled sections.
-- Live external sites (Marvel, NFL, Google, Wikipedia, The Verge) embedded without layout thrash.
-- Real-time height readouts so you can verify your own endpoints quickly.
-- One code path that works the same on iOS, Android, and Expo Go.
+1. **Local HTML demo** — toggle a switch to mutate the document and watch the WebView re-size live.
+2. **Remote site picker** — swap between Marvel, NFL, Google, Wikipedia, and The Verge to verify CMS-driven layouts resolve cleanly.
+3. **Custom Google Font** — a local HTML page that imports the `Lobster` font over the network. The WebView hangs briefly while the font downloads, then the bridge re-measures via `document.fonts.loadingdone` and snaps to the final height with no clipping.
+4. **Long-form article** — a CMS-style payload with lazy images and trailing margins that exercises the multi-source measurement path (`scrollHeight` + `getBoundingClientRect().bottom + computedMarginBottom`).
+
+The demo is also wired up with [`babel-plugin-react-compiler`](https://react.dev/learn/react-compiler) so you can see how the library composes inside a React Compiler–enabled app.
 
 > [!NOTE]
-> 🧪 The demo is built with Expo; swap the `uri` to test your own pages instantly.
+> 🧪 The demo is built with Expo; swap any `uri` to test your own pages instantly.
 
 ## ⚙️ API
 
@@ -147,12 +149,23 @@ Fix it with `loadingContainerStyle`:
 
 ## 🧠 How It Works
 
-- Injected bridge re-parents all body children into a dedicated wrapper, trims trailing blanks, and observes DOM mutations, layout changes, font loads, and viewport shifts.
-- Media events (images / iframes / video) trigger immediate + next-frame samples so late assets still report accurate heights.
-- Media elements stay observed via `ResizeObserver` + decode promises, catching intrinsic size changes without duplicate network requests.
-- Height calculations are debounced via `requestAnimationFrame` and a short idle timer to prevent resize storms.
-- Measurements arrive through `postMessage`, then `useAutoHeight` coalesces them into a single render per frame.
-- Package exports the bridge, hook, and helpers individually, making it easy to build bespoke wrappers when needed.
+The injected bridge runs once per page, before content loads, and turns the WebView into a self-measuring component:
+
+- **Re-parents body children into a dedicated wrapper.** The wrapper has no explicit height and no `overflow: hidden`, so its layout is never clamped by the native frame size.
+- **Multi-source measurement (the production-grade fix).** Each measurement is the `Math.max` of four authoritative layout sources:
+  1. `wrapper.scrollHeight` / `wrapper.offsetHeight` — primary, fastest, accurate for normal block flow.
+  2. `document.body.scrollHeight` / `documentElement.scrollHeight` — backstop when frameworks style `body`/`html` directly.
+  3. The last non-inert child's `getBoundingClientRect().bottom + computedMarginBottom` — catches margin-collapse, late image reflow, and trailing absolutely-positioned content where `scrollHeight` momentarily under-reports on iOS WKWebView.
+
+  Inert siblings (`SCRIPT`, `STYLE`, `META`, `LINK`, `TITLE`, `HEAD`, `NOSCRIPT`) are skipped during the last-child walk so they never short-circuit the probe.
+- **Bootstrap-grace adaptive fallback.** A timer re-arms itself only while either condition holds:
+  - `pendingLoads > 0` (an image / iframe / video is still loading), **or**
+  - `Date.now() - bootstrapAt < BOOTSTRAP_GRACE_MS` (5 s grace window from script start, refreshed on `markLoading`, font `loadingdone`, and external `state.refresh` calls).
+
+  Once both expire only signal-driven re-measures (mutation, resize, font, viewport, message) trigger work — the steady-state CPU cost is zero.
+- **Signal-driven observers.** `MutationObserver`, `ResizeObserver`, `visualViewport`, font-load events, and a namespaced `postMessage` channel each schedule a single rAF-batched measure.
+- **Rendered through `useAutoHeight`.** Heights are validated, clamped to `MAX_COMMITTED_HEIGHT` (120 000 dp), diff-thresholded, and committed at most once per animation frame.
+- **Public surface stays small.** The package exports the bridge string, the hook, and helpers individually, so you can build bespoke wrappers (e.g. around a custom WebView component) without forking.
 
 ## ⚖️ Performance Snapshot
 
@@ -173,10 +186,11 @@ Every hot path is designed to run at its theoretical complexity floor — no all
 | Message parsing (`useAutoHeight`) | **O(1)** | Namespaced-prefix check, single `Number()` coerce, constant-bound clamp. |
 | Height commit (rAF-batched) | **O(1)** amortized per frame | Sub-pixel diffs are dropped; at most one React render per animation frame. |
 | DOM mutation callback | **O(added nodes)** | Scans only each mutation's `addedNodes`, not the whole tree. Media elements are deduped via a `WeakSet`. |
-| `measureHeight` | **1 forced reflow / call** | Reads the wrapper element only — its box is authoritative because every `<body>` child lives inside it. |
+| `measureHeight` | **O(k)**, single forced reflow | `Math.max` of `scrollHeight`/`offsetHeight` (constant) + a `getBoundingClientRect()` on the last non-inert child (`k` = number of trailing inert siblings, typically 0–2). |
 | Trailing-node prune DFS | Runs only when the DOM is **dirty** | A mutation-driven dirty flag skips the recursive walk on resize / font / viewport ticks when nothing structural changed. |
+| Late web-font reflow | **Bootstrap-grace + adaptive** | Font `loadingdone` refreshes the bootstrap window; the fallback timer keeps re-arming with 1.5× backoff until layout settles, then disarms automatically. |
 
-The net effect: resize storms, font loads, and viewport changes cost a single `getBoundingClientRect()` per frame — nothing more. Paired with `sideEffects: false` and named-only exports, the library stays fast *and* small in the final bundle.
+The net effect: resize storms, font loads, and viewport changes cost a single layout flush per frame — nothing more. Paired with `sideEffects: false` and named-only exports, the library stays fast *and* small in the final bundle. The library is also compiled with [`babel-plugin-react-compiler`](https://react.dev/learn/react-compiler), so memoization is automatic and free of stale closures.
 
 ### 📦 Bundle & tree-shaking
 

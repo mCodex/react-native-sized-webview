@@ -59,28 +59,37 @@ const HEIGHT_DIFF_THRESHOLD = 1;
  *
  * Accepts:
  * - `number` values (direct/programmatic calls — never reach the WebView).
- * - Strings starting with {@link BRIDGE_MESSAGE_PREFIX} (bridge traffic).
+ * - Strings starting with {@link BRIDGE_MESSAGE_PREFIX} whose suffix is a
+ *   plain decimal number (the only shape the bridge ever emits).
  *
  * Bare numeric strings (e.g. `'360'`) are rejected: only the namespaced
  * bridge protocol is trusted, so user-land `postMessage('123')` cannot mutate
  * the container height.
+ *
+ * Hex (`0x100`), exponential (`1e10`), and whitespace-padded inputs are also
+ * rejected — `Number()` would silently coerce them, but the bridge never
+ * produces such payloads, so anything matching those shapes is treated as a
+ * tampered/forged message.
  */
+const BRIDGE_NUMBER_PATTERN = /^\d+(?:\.\d+)?$/;
+
 const parseHeightPayload = (rawValue: unknown): number | null => {
-  let candidate: unknown;
+  let numericValue: number;
 
   if (typeof rawValue === 'number') {
-    candidate = rawValue;
+    numericValue = rawValue;
   } else if (
     typeof rawValue === 'string' &&
     rawValue.startsWith(BRIDGE_MESSAGE_PREFIX)
   ) {
-    candidate = rawValue.slice(BRIDGE_MESSAGE_PREFIX.length);
+    const suffix = rawValue.slice(BRIDGE_MESSAGE_PREFIX.length);
+    if (!BRIDGE_NUMBER_PATTERN.test(suffix)) {
+      return null;
+    }
+    numericValue = Number(suffix);
   } else {
     return null;
   }
-
-  const numericValue =
-    typeof candidate === 'number' ? candidate : Number(candidate);
 
   if (!Number.isFinite(numericValue) || numericValue <= 0) {
     return null;
@@ -96,11 +105,38 @@ const parseHeightPayload = (rawValue: unknown): number | null => {
 /**
  * React hook that owns the WebView's container height state.
  *
+ * @remarks
  * - Initial value is `undefined` when `minHeight` is `0`, otherwise `minHeight`.
  * - Incoming payloads are validated, clamped to `MAX_COMMITTED_HEIGHT`, and
  *   rAF-batched to at most one commit per frame.
  * - Sub-`HEIGHT_DIFF_THRESHOLD` changes are dropped to avoid layout thrash.
  * - Pending frames are cancelled on unmount.
+ *
+ * Use this hook directly when you need to drive the auto-sizing pipeline
+ * yourself (e.g. wrapping a custom WebView component). Otherwise prefer the
+ * pre-wired {@link SizedWebView} component.
+ *
+ * @param options - See {@link UseAutoHeightOptions}.
+ * @returns `{ height, setHeightFromPayload }` — see {@link UseAutoHeightResult}.
+ *
+ * @example
+ * ```tsx
+ * import { WebView } from 'react-native-webview';
+ * import { AUTO_HEIGHT_BRIDGE, useAutoHeight } from 'react-native-sized-webview';
+ *
+ * function CustomSizedView({ html }: { html: string }) {
+ *   const { height, setHeightFromPayload } = useAutoHeight({ minHeight: 0 });
+ *   return (
+ *     <View style={{ height }}>
+ *       <WebView
+ *         source={{ html }}
+ *         injectedJavaScriptBeforeContentLoaded={AUTO_HEIGHT_BRIDGE}
+ *         onMessage={(e) => setHeightFromPayload(e.nativeEvent.data)}
+ *       />
+ *     </View>
+ *   );
+ * }
+ * ```
  */
 export const useAutoHeight = (
   options: UseAutoHeightOptions
