@@ -17,8 +17,8 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   var IDLE_DEBOUNCE_MS = 160;
   var INITIAL_FALLBACK_MS = 600;
   var MAX_FALLBACK_MS = 4000;
+  var MAX_FALLBACK_ITERATIONS = 8;
   var MAX_REASONABLE_HEIGHT = 120000;
-  var MAX_CONTENT_SCAN_NODES = 1600;
   var WARMUP_MIN_HEIGHT = 2;
 
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -38,12 +38,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     typeof queueMicrotask === 'function'
       ? queueMicrotask
       : function (callback) {
-          if (typeof Promise === 'function') {
-            Promise.resolve().then(callback).catch(function () {});
-            return;
-          }
-
-          setTimeout(callback, 0);
+          Promise.resolve().then(callback).catch(function () {});
         };
 
   var once = function (fn) {
@@ -68,6 +63,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     anomalyCount: 0,
     fallbackTimer: null,
     fallbackDelay: INITIAL_FALLBACK_MS,
+    fallbackCount: 0,
     cleanup: [],
     wrapper: null,
     mediaObserver: null,
@@ -137,6 +133,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   };
 
   state.refresh = function () {
+    state.fallbackCount = 0;
     ensureWrapper();
     scheduleMeasure(true);
   };
@@ -296,6 +293,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
 
   var markLoading = function () {
     state.pendingLoads += 1;
+    state.fallbackCount = 0;
     scheduleFallback();
   };
 
@@ -310,141 +308,12 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       return 0;
     }
 
-    var rectHeight = 0;
-    if (typeof element.getBoundingClientRect === 'function') {
-      var rect = element.getBoundingClientRect();
-      rectHeight = rect && typeof rect.height === 'number' ? rect.height : 0;
-    }
-
     return Math.max(
       0,
-      rectHeight,
       element.scrollHeight || 0,
       element.offsetHeight || 0,
       element.clientHeight || 0
     );
-  };
-
-  var readStyleNumber = function (element, property) {
-    if (!element || typeof window.getComputedStyle !== 'function') {
-      return 0;
-    }
-
-    var styles = window.getComputedStyle(element);
-    if (!styles) {
-      return 0;
-    }
-
-    var value = parseFloat(styles[property]);
-    return isFinite(value) ? value : 0;
-  };
-
-  var readElementBottom = function (element, rootTop) {
-    if (!element || typeof element.getBoundingClientRect !== 'function') {
-      return 0;
-    }
-
-    var rect = element.getBoundingClientRect();
-    if (!rect || typeof rect.bottom !== 'number') {
-      return 0;
-    }
-
-    return Math.max(
-      0,
-      rect.bottom -
-        rootTop +
-        Math.max(0, readStyleNumber(element, 'marginBottom'))
-    );
-  };
-
-  var readTextBottom = function (node, rootTop) {
-    if (!hasMeaningfulText(node && node.textContent)) {
-      return 0;
-    }
-
-    if (typeof document.createRange !== 'function') {
-      return 0;
-    }
-
-    var range = document.createRange();
-    var bottom = 0;
-
-    try {
-      range.selectNodeContents(node);
-      var rects = range.getClientRects();
-      for (var index = 0; index < rects.length; index += 1) {
-        var rect = rects[index];
-        if (rect && typeof rect.bottom === 'number') {
-          bottom = Math.max(bottom, rect.bottom - rootTop);
-        }
-      }
-    } catch (error) {
-      // no-op
-    }
-
-    if (typeof range.detach === 'function') {
-      range.detach();
-    }
-
-    return Math.max(0, bottom);
-  };
-
-  var readRenderedContentHeight = function (container) {
-    if (!container || typeof container.getBoundingClientRect !== 'function') {
-      return 0;
-    }
-
-    var containerRect = container.getBoundingClientRect();
-    var rootTop =
-      containerRect && typeof containerRect.top === 'number'
-        ? containerRect.top
-        : 0;
-    var maxBottom = 0;
-    var visited = 0;
-
-    var scan = function (node) {
-      if (!node || visited >= MAX_CONTENT_SCAN_NODES) {
-        return;
-      }
-
-      visited += 1;
-
-      if (node.nodeType === 3) {
-        maxBottom = Math.max(maxBottom, readTextBottom(node, rootTop));
-        return;
-      }
-
-      if (node.nodeType !== 1) {
-        return;
-      }
-
-      var tag = (node.tagName || '').toUpperCase();
-      if (
-        tag === 'SCRIPT' ||
-        tag === 'STYLE' ||
-        tag === 'META' ||
-        tag === 'LINK' ||
-        tag === 'TITLE'
-      ) {
-        return;
-      }
-
-      maxBottom = Math.max(maxBottom, readElementBottom(node, rootTop));
-
-      var child = node.firstChild;
-      while (child && visited < MAX_CONTENT_SCAN_NODES) {
-        scan(child);
-        child = child.nextSibling;
-      }
-    };
-
-    var child = container.firstChild;
-    while (child && visited < MAX_CONTENT_SCAN_NODES) {
-      scan(child);
-      child = child.nextSibling;
-    }
-
-    return Math.max(0, maxBottom);
   };
 
   var measureHeight = function () {
@@ -458,41 +327,18 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       pruneTrailingNodes(wrapper);
     }
 
-    // Fast path: wrapper/body/html layout boxes usually cover the document.
-    // The rendered-content pass below is a bounded backstop for margin
-    // collapsing, overflow, and WKWebView cases where scrollHeight undercounts.
-    var targets = [];
+    // The wrapper div has no explicit height and no overflow:hidden, so its
+    // scrollHeight/offsetHeight always reflect the natural content size —
+    // never clamped by the native WKWebView viewport. body/html can be
+    // viewport-clamped when the native frame is smaller than the content, so
+    // they are only used as a fallback when the wrapper is unavailable.
+    var target = wrapper || body || html;
 
-    if (wrapper) {
-      targets.push(wrapper);
-    }
-    if (body && body !== wrapper) {
-      targets.push(body);
-    }
-    if (html && html !== body && html !== wrapper) {
-      targets.push(html);
-    }
-
-    if (!targets.length) {
+    if (!target) {
       return 0;
     }
 
-    var maxHeight = 0;
-    for (var index = 0; index < targets.length; index += 1) {
-      var value = readElementHeight(targets[index]);
-      if (value > maxHeight) {
-        maxHeight = value;
-      }
-    }
-
-    if (wrapper) {
-      var renderedHeight = readRenderedContentHeight(wrapper);
-      if (renderedHeight > maxHeight) {
-        maxHeight = renderedHeight;
-      }
-    }
-
-    return Math.max(0, Math.ceil(maxHeight));
+    return Math.max(0, Math.ceil(readElementHeight(target)));
   };
 
   var postHeight = function (height) {
@@ -561,8 +407,13 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
       return;
     }
 
+    if (state.fallbackCount >= MAX_FALLBACK_ITERATIONS && state.pendingLoads === 0) {
+      return;
+    }
+
     state.fallbackTimer = window.setTimeout(function () {
       state.fallbackTimer = null;
+      state.fallbackCount += 1;
       scheduleMeasure(true);
       state.fallbackDelay = Math.min(
         MAX_FALLBACK_MS,
@@ -622,6 +473,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   };
 
   var requestDebouncedMeasure = function () {
+    state.fallbackCount = 0;
     scheduleFallback();
 
     if (state.microtask) {
@@ -936,7 +788,6 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
           }
         }
       }
-        pruneTrailingNodes(state.wrapper);
     });
 
     var target = document.documentElement || document.body;
@@ -966,19 +817,9 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
     });
 
     var wrapper = ensureWrapper();
-    var html = document.documentElement;
-    var body = document.body;
 
     if (wrapper) {
       resizeObserver.observe(wrapper);
-    }
-
-    if (html) {
-      resizeObserver.observe(html);
-    }
-
-    if (body && body !== html && body !== wrapper) {
-      resizeObserver.observe(body);
     }
 
     addCleanup(function () {
@@ -1045,7 +886,7 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
         return;
       }
 
-      if (typeof event.data === 'string') {
+      if (typeof event.data === 'string' && event.data.charCodeAt(0) === 123) {
         try {
           var parsed = JSON.parse(event.data);
           if (parsed && parsed.topic === MESSAGE_KEY) {

@@ -39,7 +39,7 @@ Three defaults changed in the 1.1.x line. Each is a one-line migration:
 - 🛡️ Sanity guard clamps runaway heights and retries with the last good value, so flaky pages never lock your layout.
 - 🧵 Keeps the WebView scroll-disabled so outer `ScrollView`s and gesture handlers stay silky smooth.
 - 🎨 Transparent background by default; style the container however you like.
-- ⚙️ Friendly API with `minHeight`, `containerStyle`, and `onHeightChange` callbacks.
+- ⚙️ Friendly API with `minHeight`, `containerStyle`, `loadingContainerStyle`, and `onHeightChange` callbacks.
 - 🌲 ESM-first build, fully typed, `sideEffects: false` for optimal tree shaking.
 - 📱 Verified on iOS, Android, and Expo Go out of the box.
 
@@ -100,6 +100,7 @@ The example showcases:
 | --- | --- | --- | --- |
 | `minHeight` | `number` | `0` | Minimum height (dp) applied to the container. When `0`, the container is unsized until the first measurement arrives (avoids layout flicker and the iOS 26 WKWebView 1px feedback loop). |
 | `containerStyle` | `StyleProp<ViewStyle>` | — | Styles applied to the wrapping `View`. Use it for padding, borders, or shadows. Do not set `height` — it is managed by the hook. |
+| `loadingContainerStyle` | `StyleProp<ViewStyle>` | — | Styles applied to the wrapping `View` **only while height is still being measured** (i.e. while the bridge has not yet reported a value). Use `{ flex: 1 }` inside a `ScrollView` with `contentContainerStyle={{ flexGrow: 1 }}` so the native activity indicator is never clipped. Dropped automatically once the first measurement commits. |
 | `onHeightChange` | `(height: number) => void` | — | Callback fired whenever a new height is committed. Great for analytics or debugging. Never fires for invalid or out-of-range values. |
 | `originWhitelist` | `string[]` | `['http://*', 'https://*']` | Origins the WebView is allowed to navigate to. Blocks non-web schemes (`file:`, `javascript:`, `data:`, `intent:`) by default. Tighten it to a specific origin list for stricter environments. |
 | `javaScriptEnabled` | `boolean` | `true` | When `false`, the auto-height bridge is **not** injected and the container falls back to `minHeight`. Use for static HTML that doesn't need JS. |
@@ -107,6 +108,26 @@ The example showcases:
 
 > [!NOTE]
 > 🧩 `scrollEnabled` defaults to `false` so sizing remains deterministic. Only enable it if the WebView should manage its own scroll.
+
+### Loading state inside a `ScrollView`
+
+When `minHeight` is `0` (the default), the container has no height until the bridge reports the first measurement. Inside a `ScrollView` this means the native loading spinner is rendered in a 0 dp frame and gets clipped.
+
+Fix it with `loadingContainerStyle`:
+
+```tsx
+<ScrollView contentContainerStyle={{ flexGrow: 1 }}>
+  <SizedWebView
+    source={{ uri: 'https://example.com/article' }}
+    loadingContainerStyle={{ flex: 1 }}
+    containerStyle={{ borderRadius: 12, overflow: 'hidden' }}
+    renderLoading={() => <ActivityIndicator size="large" style={{ flex: 1 }} />}
+  />
+</ScrollView>
+```
+
+- During loading: container is `[{ flex: 1 }, containerStyle]` — fills the scroll area, spinner is fully visible.
+- After measurement: container becomes `[{ height: N }, containerStyle]` — shrinks to content height, `loadingContainerStyle` is dropped.
 
 ## 🛡️ Security
 

@@ -31,6 +31,29 @@ export interface SizedWebViewProps extends WebViewProps {
   containerStyle?: StyleProp<ViewStyle>;
 
   /**
+   * Style applied to the wrapping `View` only while the content height is
+   * still being measured (i.e. while `height` is `undefined`).
+   *
+   * Use this to keep the container visible during loading so the native
+   * activity indicator is never clipped. A common pattern:
+   *
+   * ```tsx
+   * // Inside a ScrollView with contentContainerStyle={{ flexGrow: 1 }}
+   * <SizedWebView
+   *   source={source}
+   *   loadingContainerStyle={{ flex: 1 }}
+   * />
+   * ```
+   *
+   * Once the first height measurement is committed, this style is dropped and
+   * `containerStyle` + the measured `{ height }` take full effect. Setting
+   * this on the **outer container** (not the inner WebView) is safe — the
+   * injected wrapper `div` has `height: auto` and no `overflow: hidden`, so
+   * `wrapper.scrollHeight` is never clamped by the native frame size.
+   */
+  loadingContainerStyle?: StyleProp<ViewStyle>;
+
+  /**
    * Fires after each committed auto-height change. Values are rAF-batched and
    * clamped to a sane upper bound for safety.
    */
@@ -56,7 +79,6 @@ const WEBVIEW_DEFAULTS = {
 } satisfies Partial<WebViewProps>;
 
 const TRANSPARENT_WEBVIEW_STYLE = { backgroundColor: 'transparent' as const };
-const MEASURED_WEBVIEW_STYLE = { flex: 1, width: '100%' as const };
 
 /**
  * A `react-native-webview` that sizes itself to match its rendered HTML.
@@ -73,6 +95,7 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
   const {
     minHeight = 0,
     containerStyle,
+    loadingContainerStyle,
     style,
     injectedJavaScript,
     injectedJavaScriptBeforeContentLoaded,
@@ -124,18 +147,16 @@ const SizedWebViewImpl = (props: SizedWebViewProps) => {
 
   const containerStyles = useMemo<StyleProp<ViewStyle>>(() => {
     if (height == null) {
-      return containerStyle;
+      return loadingContainerStyle != null
+        ? [loadingContainerStyle, containerStyle]
+        : containerStyle;
     }
     return [{ height }, containerStyle];
-  }, [containerStyle, height]);
+  }, [containerStyle, height, loadingContainerStyle]);
 
   const webViewStyles = useMemo(
-    () => [
-      TRANSPARENT_WEBVIEW_STYLE,
-      height == null ? undefined : MEASURED_WEBVIEW_STYLE,
-      style,
-    ],
-    [height, style]
+    () => [TRANSPARENT_WEBVIEW_STYLE, style],
+    [style]
   );
 
   return (

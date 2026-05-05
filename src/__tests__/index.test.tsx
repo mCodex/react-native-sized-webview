@@ -73,7 +73,6 @@ describe('SizedWebView', () => {
 
     expect(props.style).toEqual([
       { backgroundColor: 'transparent' },
-      { flex: 1, width: '100%' },
       { opacity: 0.5 },
     ]);
     expect(props.originWhitelist).toEqual(['http://*', 'https://*']);
@@ -286,6 +285,55 @@ describe('SizedWebView', () => {
     // but MUST still be forwarded to the consumer's onMessage.
     expect(__setHeightFromPayload).not.toHaveBeenCalled();
     expect(onMessage).toHaveBeenCalledWith(userLandEvent);
+
+    act(() => {
+      renderResult.unmount();
+    });
+  });
+
+  it('applies loadingContainerStyle to the container while height is undefined', () => {
+    const { useAutoHeight, __setHeightFromPayload } = jest.requireMock(
+      '../hooks/useAutoHeight'
+    );
+    (useAutoHeight as jest.Mock).mockReturnValue({
+      height: undefined,
+      setHeightFromPayload: __setHeightFromPayload,
+    });
+
+    const renderResult = render(
+      <SizedWebView
+        source={{ html: '<p>Hi</p>' }}
+        loadingContainerStyle={{ flex: 1 }}
+        containerStyle={{ backgroundColor: 'blue' }}
+      />
+    );
+
+    const container = renderResult.UNSAFE_getByType(View);
+    expect(container.props.style).toEqual([
+      { flex: 1 },
+      { backgroundColor: 'blue' },
+    ]);
+
+    act(() => {
+      renderResult.unmount();
+    });
+  });
+
+  it('does not include loadingContainerStyle once height is committed', () => {
+    const renderResult = render(
+      <SizedWebView
+        source={{ html: '<p>Hi</p>' }}
+        loadingContainerStyle={{ flex: 1 }}
+        containerStyle={{ backgroundColor: 'green' }}
+      />
+    );
+
+    // Default mock returns height: 240 — measurement is already committed.
+    const container = renderResult.UNSAFE_getByType(View);
+    expect(container.props.style).toEqual([
+      { height: 240 },
+      { backgroundColor: 'green' },
+    ]);
 
     act(() => {
       renderResult.unmount();
