@@ -149,15 +149,15 @@ Fix it with `loadingContainerStyle`:
 
 ## 🧠 How It Works
 
-The injected bridge runs once per page, before content loads, and turns the WebView into a self-measuring component:
+The injected bridge is idempotent and may run at both `injectedJavaScriptBeforeContentLoaded` and `injectedJavaScript` (the second injection is a no-op when the first already published the global handle, but covers iOS inline `source.html` cases where the early hook is skipped). It turns the WebView into a self-measuring component:
 
-- **Re-parents body children into a dedicated wrapper.** The wrapper has no explicit height and no `overflow: hidden`, so its layout is never clamped by the native frame size.
-- **Multi-source measurement (the production-grade fix).** Each measurement is the `Math.max` of four authoritative layout sources:
-  1. `wrapper.scrollHeight` / `wrapper.offsetHeight` — primary, fastest, accurate for normal block flow.
-  2. `document.body.scrollHeight` / `documentElement.scrollHeight` — backstop when frameworks style `body`/`html` directly.
-  3. The last non-inert child's `getBoundingClientRect().bottom + computedMarginBottom` — catches margin-collapse, late image reflow, and trailing absolutely-positioned content where `scrollHeight` momentarily under-reports on iOS WKWebView.
+- **Measures the page in place.** The bridge does not re-parent `<body>` children into a wrapper and does not inject inline styles; it reads layout directly from the document's existing flow so framework- or CMS-generated DOM stays untouched (preserving margin collapse, author CSS, and any structure the page expects).
+- **Multi-source measurement (the production-grade fix).** Each measurement is the `Math.max` of authoritative layout sources:
+  1. `document.body.scrollHeight` / `document.body.offsetHeight` — primary document metrics for normal block flow.
+  2. `document.documentElement.scrollHeight` / `document.documentElement.offsetHeight` — backstop when frameworks style `html` directly or when the root box exceeds `body`.
+  3. The last non-inert in-flow child's `getBoundingClientRect().bottom + computedMarginBottom` — catches margin-collapse, late image reflow, and end-of-document cases where scroll metrics momentarily under-report on iOS WKWebView.
 
-  Inert siblings (`SCRIPT`, `STYLE`, `META`, `LINK`, `TITLE`, `HEAD`, `NOSCRIPT`) are skipped during the last-child walk so they never short-circuit the probe.
+  Inert siblings (`SCRIPT`, `STYLE`, `META`, `LINK`, `TITLE`, `HEAD`, `NOSCRIPT`) and out-of-flow positions (`fixed` / `sticky` / `absolute`) are skipped during the last-in-flow-child walk so they never short-circuit the probe.
 - **Bootstrap-grace adaptive fallback.** A timer re-arms itself only while either condition holds:
   - `pendingLoads > 0` (an image / iframe / video is still loading), **or**
   - `Date.now() - bootstrapAt < BOOTSTRAP_GRACE_MS` (5 s grace window from script start, refreshed on `markLoading`, font `loadingdone`, and external `state.refresh` calls).

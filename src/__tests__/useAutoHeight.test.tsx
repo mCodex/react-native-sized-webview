@@ -136,13 +136,14 @@ describe('useAutoHeight', () => {
     unmount();
   });
 
-  it('rejects prefixed payloads that are not plain decimal numbers', () => {
+  it('rejects prefixed payloads that are not plain integer numbers', () => {
     const { unmount } = render(
       <Harness minHeight={0} onHeightChange={onHeightChange} />
     );
 
-    // Hex, exponential, leading/trailing whitespace, and signed values must
-    // all be treated as forged input — the bridge only emits plain decimals.
+    // Hex, exponential, leading/trailing whitespace, signed, and decimal
+    // values must all be treated as forged input — the bridge only emits
+    // ASCII-digit integers (`String(Math.ceil(height))`).
     const forgedPayloads = [
       '__RN_SIZED_WV__:0x100',
       '__RN_SIZED_WV__:1e10',
@@ -151,6 +152,8 @@ describe('useAutoHeight', () => {
       '__RN_SIZED_WV__:-360',
       '__RN_SIZED_WV__:NaN',
       '__RN_SIZED_WV__:Infinity',
+      '__RN_SIZED_WV__:360.5',
+      '__RN_SIZED_WV__:.5',
     ];
 
     for (const payload of forgedPayloads) {

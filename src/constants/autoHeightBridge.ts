@@ -8,10 +8,13 @@
  * correct rendering inside iOS 26 WKWebView.
  *
  * @remarks
- * ## Measurement algorithm (O(1))
+ * ## Measurement algorithm (O(k))
  *
  * Every measurement is the `Math.max` of multiple authoritative layout
- * sources, **without mutating** the host page's DOM or styles:
+ * sources, **without mutating** the host page's DOM or styles. The cost is
+ * O(k) where k is the number of trailing inert / out-of-flow siblings the
+ * last-child walk has to skip (typically 0–2 — effectively constant in
+ * steady state):
  *
  * 1. `body.scrollHeight` / `body.offsetHeight` — primary signal; includes
  *    body padding and any block-level margin that did not collapse out.
@@ -21,8 +24,13 @@
  *    computedMarginBottom` — catches margin-collapse (where the last
  *    child's bottom margin escapes `<body>`) and late-reflow scenarios
  *    where `scrollHeight` momentarily under-reports on iOS WKWebView.
- *    `getBoundingClientRect` is part of the CSSOM View spec and returns
- *    document-layout coordinates, NOT viewport-clamped values.
+ *    Per the CSSOM View spec, `getBoundingClientRect` returns
+ *    viewport-relative coordinates whose values are NOT clamped to the
+ *    visible viewport. We use the bottom value as a proxy for the
+ *    document's bottom edge under the assumption the page itself is not
+ *    internally scrolled during measurement — a safe assumption since the
+ *    host RN component sets `scrollEnabled={false}` and the bridge never
+ *    triggers programmatic scrolling.
  *
  * Inert siblings (`SCRIPT`, `STYLE`, `META`, `LINK`, `TITLE`, `HEAD`,
  * `NOSCRIPT`) and out-of-flow positions (`fixed` / `sticky` / `absolute`)
@@ -271,18 +279,6 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
   // ============================================================
   // SECTION: Content classification
   // ============================================================
-  var RENDERABLE_MEDIA_TAGS = {
-    IMG: true,
-    IFRAME: true,
-    VIDEO: true,
-    SVG: true,
-    CANVAS: true,
-    PICTURE: true,
-    OBJECT: true,
-    EMBED: true,
-    AUDIO: true,
-  };
-
   // Inert tags — never contribute to layout height. Skipped by the last-child
   // walk in measureHeight() so a trailing <script>/<style> never fools the
   // position-based probe into reporting 0.
@@ -335,9 +331,11 @@ export const AUTO_HEIGHT_BRIDGE: string = `(() => {
    *
    * The position-based probe catches cases where scrollHeight under-reports
    * (margin-collapse where the last child's bottom margin escapes \`<body>\`,
-   * late image reflow, etc.). It is spec-correct on both iOS WKWebView and
-   * Android WebView — \`getBoundingClientRect\` returns document-layout
-   * coordinates, not viewport-clamped values.
+   * late image reflow, etc.). \`getBoundingClientRect\` returns
+   * viewport-relative coordinates per CSSOM View, but those values are not
+   * clamped to the visible viewport — and the host RN component sets
+   * \`scrollEnabled={false}\` so the WebView is never internally scrolled,
+   * making the bottom value a reliable proxy for the document's bottom edge.
    *
    * Complexity: O(k) where k is the number of trailing inert / out-of-flow
    * siblings (typically 0–2). Single layout flush per call.

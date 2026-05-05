@@ -60,18 +60,19 @@ const HEIGHT_DIFF_THRESHOLD = 1;
  * Accepts:
  * - `number` values (direct/programmatic calls — never reach the WebView).
  * - Strings starting with {@link BRIDGE_MESSAGE_PREFIX} whose suffix is a
- *   plain decimal number (the only shape the bridge ever emits).
+ *   non-empty run of ASCII digits (the only shape the bridge ever emits:
+ *   `MESSAGE_PREFIX + String(Math.ceil(height))`).
  *
  * Bare numeric strings (e.g. `'360'`) are rejected: only the namespaced
  * bridge protocol is trusted, so user-land `postMessage('123')` cannot mutate
  * the container height.
  *
- * Hex (`0x100`), exponential (`1e10`), and whitespace-padded inputs are also
- * rejected — `Number()` would silently coerce them, but the bridge never
- * produces such payloads, so anything matching those shapes is treated as a
- * tampered/forged message.
+ * Decimals (`12.5`), hex (`0x100`), exponential (`1e10`), and
+ * whitespace-padded inputs are also rejected — `Number()` would silently
+ * coerce them, but the bridge never produces such payloads, so anything
+ * matching those shapes is treated as a tampered/forged message.
  */
-const BRIDGE_NUMBER_PATTERN = /^\d+(?:\.\d+)?$/;
+const BRIDGE_NUMBER_PATTERN = /^\d+$/;
 
 const parseHeightPayload = (rawValue: unknown): number | null => {
   let numericValue: number;
@@ -121,6 +122,7 @@ const parseHeightPayload = (rawValue: unknown): number | null => {
  *
  * @example
  * ```tsx
+ * import { View } from 'react-native';
  * import { WebView } from 'react-native-webview';
  * import { AUTO_HEIGHT_BRIDGE, useAutoHeight } from 'react-native-sized-webview';
  *
